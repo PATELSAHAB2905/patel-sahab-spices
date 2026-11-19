@@ -19,6 +19,7 @@ import {
   getPowderStockSummary 
 } from '../services/inventoryEngine';
 import { queueSyncRecord } from '../services/syncService';
+import SaveConfirmationModal from './SaveConfirmationModal';
 
 const AVAILABLE_PACK_SIZES = [10, 24, 50, 100, 200, 500];
 
@@ -27,6 +28,7 @@ export default function PackagingModule({ activeEmployee, onOpenEmployeeModal })
   const [selectedBatchData, setSelectedBatchData] = useState(null);
   const [history, setHistory] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [saveConfirmation, setSaveConfirmation] = useState(null);
 
   // Form State
   const [date, setDate] = useState(getTodayDateStr());
@@ -177,6 +179,15 @@ export default function PackagingModule({ activeEmployee, onOpenEmployeeModal })
       for (const rec of recordsToInsert) {
         await queueSyncRecord('PACKAGING', rec);
       }
+
+      setSaveConfirmation({
+        entryId: recordsToInsert[0]?.entry_id || transactionId,
+        date: date,
+        productName: selectedBatchData?.productName || productName,
+        quantity: `${totalPowderUsedKg} KG (${packSizesEntered.join(', ')})`,
+        batchId: selectedBatchId,
+        moduleName: 'Packaging'
+      });
 
       setSuccessMsg(
         `Packaging completed for Batch ${selectedBatchId}! Produced: ${packSizesEntered.join(', ')} (${totalPowderUsedKg} KG total).`
@@ -403,6 +414,7 @@ export default function PackagingModule({ activeEmployee, onOpenEmployeeModal })
                           type="number"
                           min="0"
                           step="0.001"
+                          inputMode="decimal"
                           placeholder="0.000"
                           value={kgVal}
                           onChange={(e) => handlePackKgChange(size, e.target.value)}
@@ -573,6 +585,13 @@ export default function PackagingModule({ activeEmployee, onOpenEmployeeModal })
         </div>
 
       </div>
+
+      {/* Save Confirmation Modal */}
+      <SaveConfirmationModal
+        isOpen={Boolean(saveConfirmation)}
+        onClose={() => setSaveConfirmation(null)}
+        data={saveConfirmation}
+      />
 
     </div>
   );

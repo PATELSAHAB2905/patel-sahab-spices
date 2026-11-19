@@ -254,21 +254,30 @@ export default function AdminDashboard({ onNavigate }) {
       
       {/* 1. Header Banner */}
       <div className="bg-gradient-to-r from-slate-900 via-brand-950 to-slate-900 rounded-3xl p-5 sm:p-6 text-white shadow-lg border border-slate-700/80 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-2">
-            <span className="text-[11px] font-bold uppercase tracking-widest text-gold-400 bg-white/10 px-2.5 py-0.5 rounded-full border border-gold-400/30">
-              PATEL SAHAB SPICES
-            </span>
-            <span className="text-[11px] font-semibold text-slate-400">
-              Plant: Village Panwa, Khargone (M.P.)
-            </span>
+        <div className="flex items-center space-x-3.5">
+          <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-white p-1 flex items-center justify-center shrink-0 shadow-lg border border-red-200">
+            <img 
+              src="/logo.jpg" 
+              alt="Patel Sahab Spices" 
+              className="w-full h-full object-contain rounded-xl" 
+            />
           </div>
-          <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mt-1">
-            ADMIN DASHBOARD
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-300">
-            Production & Inventory Overview • Live Stock & Activity Monitor
-          </p>
+          <div>
+            <div className="flex items-center space-x-2">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-gold-400 bg-white/10 px-2.5 py-0.5 rounded-full border border-gold-400/30">
+                PATEL SAHAB SPICES
+              </span>
+              <span className="text-[11px] font-semibold text-slate-400 hidden sm:inline">
+                Plant: Village Panwa, Khargone (M.P.)
+              </span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mt-1">
+              ADMIN DASHBOARD
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-300">
+              Production & Inventory Overview • <span className="text-gold-300 font-medium">"सर्वे भवन्तु सुखिनः"</span>
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2.5 self-start md:self-auto">

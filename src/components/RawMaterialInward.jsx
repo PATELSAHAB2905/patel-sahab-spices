@@ -21,12 +21,14 @@ import {
   getTodayDateStr 
 } from '../services/inventoryEngine';
 import { queueSyncRecord } from '../services/syncService';
+import SaveConfirmationModal from './SaveConfirmationModal';
 
 export default function RawMaterialInward({ activeEmployee, onOpenEmployeeModal }) {
   const [products, setProducts] = useState([]);
   const [history, setHistory] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState('');
+  const [saveConfirmation, setSaveConfirmation] = useState(null);
   
   // Form State
   const [formData, setFormData] = useState({
@@ -166,8 +168,17 @@ export default function RawMaterialInward({ activeEmployee, onOpenEmployeeModal 
       // 1. Save to local IndexedDB
       await db.add('raw_material', record);
 
-      // 2. Queue for Google Sheets synchronization
+      // 2. Queue for Firebase synchronization
       await queueSyncRecord('RAW_MATERIAL', record);
+
+      setSaveConfirmation({
+        entryId: record.entry_id,
+        date: record.date,
+        productName: record.material_name,
+        quantity: `${record.quantity_kg} KG`,
+        batchId: record.batch_id,
+        moduleName: 'Raw Material Inward'
+      });
 
       setSuccessMsg(`Raw Material Received! Batch ${record.batch_id} (${record.quantity_kg} KG) saved successfully.`);
 
@@ -385,6 +396,7 @@ export default function RawMaterialInward({ activeEmployee, onOpenEmployeeModal 
                   type="number"
                   step="0.001"
                   min="0.001"
+                  inputMode="decimal"
                   required
                   placeholder="e.g. 1000"
                   value={formData.quantityKg}
@@ -555,6 +567,13 @@ export default function RawMaterialInward({ activeEmployee, onOpenEmployeeModal 
         </div>
 
       </div>
+
+      {/* Save Confirmation Modal */}
+      <SaveConfirmationModal
+        isOpen={Boolean(saveConfirmation)}
+        onClose={() => setSaveConfirmation(null)}
+        data={saveConfirmation}
+      />
 
     </div>
   );

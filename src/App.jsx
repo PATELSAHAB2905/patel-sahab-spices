@@ -3,6 +3,7 @@ import LoginPortal from './components/LoginPortal';
 import EmployeePortal from './components/EmployeePortal';
 import AdminPortal from './components/AdminPortal';
 import { seedInitialDataIfNeeded, getDB } from './services/db';
+import { ensureEmployeesMigrated } from './services/adminAuth';
 
 export default function App() {
   const [authRole, setAuthRole] = useState(null); // 'admin' | 'employee' | null
@@ -16,29 +17,27 @@ export default function App() {
   const initApp = async () => {
     try {
       await seedInitialDataIfNeeded();
+      const allEmps = await ensureEmployeesMigrated();
       setDbReady(true);
 
       const savedRole = localStorage.getItem('pss_auth_role');
       const savedEmpId = localStorage.getItem('pss_active_employee_id');
 
-      const db = await getDB();
-      const allEmps = await db.getAll('employees');
-
       let currentEmp = null;
-      if (savedEmpId) {
-        currentEmp = allEmps.find(e => e.id === savedEmpId && e.active !== false);
+      if (savedEmpId && allEmps.length > 0) {
+        currentEmp = allEmps.find(e => 
+          (e.employee_id === savedEmpId || e.id === savedEmpId) && e.active !== false
+        );
       }
-      if (!currentEmp) {
-        currentEmp = allEmps.find(e => e.active !== false) || null;
-      }
-      setActiveEmployee(currentEmp);
 
       if (savedRole === 'admin') {
         setAuthRole('admin');
       } else if (savedRole === 'employee' && currentEmp) {
+        setActiveEmployee(currentEmp);
         setAuthRole('employee');
       } else {
         setAuthRole(null);
+        setActiveEmployee(null);
       }
     } catch (err) {
       console.error('Initialization error:', err);
@@ -48,7 +47,7 @@ export default function App() {
 
   const handleEmployeeLogin = (emp) => {
     setActiveEmployee(emp);
-    localStorage.setItem('pss_active_employee_id', emp.id);
+    localStorage.setItem('pss_active_employee_id', emp.employee_id || emp.id);
     localStorage.setItem('pss_auth_role', 'employee');
     setAuthRole('employee');
   };
@@ -60,6 +59,8 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('pss_auth_role');
+    localStorage.removeItem('pss_active_employee_id');
+    setActiveEmployee(null);
     setAuthRole(null);
   };
 

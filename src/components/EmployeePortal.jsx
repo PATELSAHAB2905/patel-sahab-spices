@@ -16,7 +16,15 @@ import {
   WifiOff, 
   RefreshCw,
   Calendar,
-  AlertCircle
+  AlertCircle,
+  Menu,
+  X,
+  ChevronRight,
+  ShieldCheck,
+  Building2,
+  Phone,
+  Tag,
+  Check
 } from 'lucide-react';
 import { getDB } from '../services/db';
 import { getSyncOverview, triggerSync } from '../services/syncService';
@@ -37,7 +45,10 @@ function formatDisplayDate(dateStr) {
 }
 
 export default function EmployeePortal({ activeEmployee, onLogout }) {
-  const [activeTab, setActiveTab] = useState('HOME'); // 'HOME' | 'raw_material' | 'processing' | 'packaging' | 'order_sale' | 'ENTRIES' | 'PROFILE'
+  // Navigation: 'HOME' | 'raw_material' | 'processing' | 'packaging' | 'order_sale' | 'ENTRIES' | 'PROFILE'
+  const [activeTab, setActiveTab] = useState('HOME');
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  
   const [recentEntries, setRecentEntries] = useState([]);
   const [allMyEntries, setAllMyEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -46,7 +57,7 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
 
   // Workday session tracker
   const todayStr = getKolkataDateStr();
-  const sessionKey = `pss_workday_${activeEmployee?.id}_${todayStr}`;
+  const sessionKey = `pss_workday_${activeEmployee?.employee_id || activeEmployee?.id}_${todayStr}`;
   const [workdaySession, setWorkdaySession] = useState(() => {
     try {
       const saved = localStorage.getItem(sessionKey);
@@ -104,6 +115,7 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
     try {
       const db = await getDB();
       const empName = activeEmployee?.name || '';
+      const empId = activeEmployee?.employee_id || activeEmployee?.id || '';
 
       const [raw, proc, pkg, sales, sync] = await Promise.all([
         db.getAll('raw_material'),
@@ -115,51 +127,58 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
 
       setSyncState(sync);
 
-      // Collect entries created by this employee
-      const matchEmp = (name) => (name || '').toLowerCase() === empName.toLowerCase();
+      // Match entries recorded by this employee
+      const matchEmp = (name, recordedId) => {
+        if (recordedId && empId && recordedId.toUpperCase() === empId.toUpperCase()) return true;
+        return (name || '').toLowerCase() === empName.toLowerCase();
+      };
 
-      const myRaw = raw.filter(r => matchEmp(r.employee_name)).map(r => ({
+      const myRaw = raw.filter(r => matchEmp(r.employee_name, r.employee_id)).map(r => ({
         id: r.entry_id,
         module: 'Raw Inward',
         product: r.material_name,
         batch: r.batch_id,
         quantity: `${r.quantity_kg} KG`,
         date: r.date || r.timestamp?.slice(0, 10),
-        timestamp: r.timestamp || r.date
+        timestamp: r.timestamp || r.date,
+        synced: Boolean(r.synced)
       }));
 
-      const myProc = proc.filter(p => matchEmp(p.employee_name)).map(p => ({
+      const myProc = proc.filter(p => matchEmp(p.employee_name, p.employee_id)).map(p => ({
         id: p.entry_id,
         module: 'Processing',
         product: p.material_name || 'Spice',
         batch: p.batch_id,
         quantity: `${p.net_powder_kg} KG Powder`,
         date: p.date || p.timestamp?.slice(0, 10),
-        timestamp: p.timestamp || p.date
+        timestamp: p.timestamp || p.date,
+        synced: Boolean(p.synced)
       }));
 
-      const myPkg = pkg.filter(k => matchEmp(k.employee_name)).map(k => ({
+      const myPkg = pkg.filter(k => matchEmp(k.employee_name, k.employee_id)).map(k => ({
         id: k.entry_id,
         module: 'Packaging',
         product: k.product_name,
         batch: k.batch_id,
         quantity: `${k.packet_quantity} Pkts (${k.pack_size_gm}g)`,
         date: k.date || k.timestamp?.slice(0, 10),
-        timestamp: k.timestamp || k.date
+        timestamp: k.timestamp || k.date,
+        synced: Boolean(k.synced)
       }));
 
-      const mySales = sales.filter(s => matchEmp(s.employee_name)).map(s => ({
+      const mySales = sales.filter(s => matchEmp(s.employee_name, s.employee_id)).map(s => ({
         id: s.entry_id,
         module: 'Order / Sale',
         product: s.product_name,
         batch: s.batch_id,
         quantity: `${s.kg_sold} KG`,
         date: s.date || s.timestamp?.slice(0, 10),
-        timestamp: s.timestamp || s.date
+        timestamp: s.timestamp || s.date,
+        synced: Boolean(s.synced)
       }));
 
       const merged = [...myRaw, ...myProc, ...myPkg, ...mySales].sort(
-        (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+        (a, b) => new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)
       );
 
       setAllMyEntries(merged);
@@ -187,37 +206,51 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
     }
   };
 
+  const navigateTo = (tab) => {
+    setActiveTab(tab);
+    setIsMoreMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-20 sm:pb-6">
       
-      {/* Top Employee Header */}
-      <header className="bg-gradient-to-r from-brand-950 via-slate-900 to-brand-950 text-white shadow-md sticky top-0 z-40">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-gold-400/20 text-gold-300 flex items-center justify-center border border-gold-400/40">
-              <User className="w-6 h-6" />
+      {/* Top Application Header */}
+      <header className="bg-gradient-to-r from-brand-950 via-brand-900 to-slate-900 text-white shadow-lg sticky top-0 z-40 border-b border-brand-800">
+        <div className="max-w-5xl mx-auto px-3 sm:px-4 py-2.5 flex items-center justify-between">
+          
+          {/* Logo & Company Title */}
+          <div className="flex items-center space-x-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-white p-1 flex items-center justify-center shrink-0 shadow-md border border-red-200">
+              <img 
+                src="/logo.jpg" 
+                alt="Patel Sahab Spices" 
+                className="w-full h-full object-contain rounded-xl" 
+              />
             </div>
             <div>
-              <div className="flex items-center space-x-2">
-                <h1 className="text-sm sm:text-base font-black text-white uppercase tracking-wider">
-                  {activeEmployee?.name || 'Factory Staff'}
-                </h1>
-                <span className="text-[10px] font-bold bg-white/10 text-gold-300 px-2 py-0.5 rounded border border-white/10">
-                  {activeEmployee?.role || 'Operator'}
+              <div className="flex items-center space-x-1.5">
+                <span className="text-xs sm:text-sm font-black tracking-wide uppercase text-white">
+                  PATEL SAHAB SPICES
+                </span>
+                <span className="text-[10px] font-mono font-bold bg-gold-500 text-slate-950 px-1.5 py-0.2 rounded font-mono">
+                  {activeEmployee?.employee_id || activeEmployee?.id || 'STAFF'}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-300">
-                PATEL SAHAB SPICES • Factory Workstation
+              <p className="text-[10px] sm:text-[11px] text-gold-300/90 font-medium">
+                {activeEmployee?.name || 'Factory Employee'} • {activeEmployee?.designation || activeEmployee?.role || 'Operator'}
               </p>
             </div>
           </div>
 
+          {/* Sync Status Badge & Logout */}
           <div className="flex items-center space-x-2">
-            {/* Sync Status Badge */}
+            
+            {/* Sync Badge */}
             <button
               onClick={handleManualSync}
               disabled={syncing}
-              className={`flex items-center space-x-1 text-[11px] font-bold px-2.5 py-1 rounded-full border transition active:scale-95 ${
+              className={`flex items-center space-x-1 text-[10px] sm:text-xs font-bold px-2.5 py-1.5 rounded-full border transition active:scale-95 ${
                 syncState.isOnline
                   ? syncState.pendingCount > 0
                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
@@ -227,9 +260,9 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
               title="Click to check sync status"
             >
               <RefreshCw className={`w-3 h-3 ${syncing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">{syncState.statusText}</span>
+              <span className="hidden xs:inline">{syncState.statusText}</span>
               {syncState.pendingCount > 0 && (
-                <span className="bg-amber-400 text-slate-950 px-1 rounded-full text-[9px]">
+                <span className="bg-amber-400 text-slate-950 px-1.5 py-0.2 rounded-full text-[9px] font-black">
                   {syncState.pendingCount}
                 </span>
               )}
@@ -238,34 +271,36 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
             {/* Logout Button */}
             <button
               onClick={onLogout}
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition active:scale-95"
-              title="Logout from Employee Workstation"
+              className="flex items-center space-x-1 px-2.5 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition active:scale-95"
+              title="Logout"
             >
               <LogOut className="w-3.5 h-3.5 text-gold-300" />
               <span className="hidden sm:inline">Logout</span>
             </button>
+
           </div>
         </div>
 
-        {/* Employee Navigation Bar */}
-        <nav className="bg-white border-b border-slate-200">
-          <div className="max-w-4xl mx-auto px-2 flex space-x-1 py-1.5 overflow-x-auto no-scrollbar">
+        {/* Desktop / Tablet Navigation Row */}
+        <nav className="hidden sm:block bg-white border-b border-slate-200">
+          <div className="max-w-5xl mx-auto px-4 flex space-x-1 py-1.5 overflow-x-auto no-scrollbar">
+            
             <button
-              onClick={() => setActiveTab('HOME')}
-              className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+              onClick={() => navigateTo('HOME')}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                 activeTab === 'HOME'
                   ? 'bg-brand-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
             >
               <Home className="w-3.5 h-3.5" />
-              <span>Employee Home</span>
+              <span>Home</span>
             </button>
 
             {permitted.includes('raw_material') && (
               <button
-                onClick={() => setActiveTab('raw_material')}
-                className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+                onClick={() => navigateTo('raw_material')}
+                className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                   activeTab === 'raw_material'
                     ? 'bg-amber-700 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -278,8 +313,8 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
 
             {permitted.includes('processing') && (
               <button
-                onClick={() => setActiveTab('processing')}
-                className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+                onClick={() => navigateTo('processing')}
+                className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                   activeTab === 'processing'
                     ? 'bg-blue-700 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -292,8 +327,8 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
 
             {permitted.includes('packaging') && (
               <button
-                onClick={() => setActiveTab('packaging')}
-                className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+                onClick={() => navigateTo('packaging')}
+                className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                   activeTab === 'packaging'
                     ? 'bg-purple-700 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -306,8 +341,8 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
 
             {permitted.includes('order_sale') && (
               <button
-                onClick={() => setActiveTab('order_sale')}
-                className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+                onClick={() => navigateTo('order_sale')}
+                className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                   activeTab === 'order_sale'
                     ? 'bg-emerald-700 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -319,8 +354,8 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
             )}
 
             <button
-              onClick={() => setActiveTab('ENTRIES')}
-              className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+              onClick={() => navigateTo('ENTRIES')}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                 activeTab === 'ENTRIES'
                   ? 'bg-brand-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -331,8 +366,8 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
             </button>
 
             <button
-              onClick={() => setActiveTab('PROFILE')}
-              className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap transition ${
+              onClick={() => navigateTo('PROFILE')}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
                 activeTab === 'PROFILE'
                   ? 'bg-brand-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -341,47 +376,54 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
               <User className="w-3.5 h-3.5" />
               <span>My Profile</span>
             </button>
+
           </div>
         </nav>
       </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-4xl w-full mx-auto p-4 sm:p-6">
+      {/* Main Container Area */}
+      <main className="flex-1 max-w-5xl w-full mx-auto p-3 sm:p-5">
         
-        {/* EMPLOYEE HOME */}
+        {/* 1. EMPLOYEE HOME VIEW */}
         {activeTab === 'HOME' && (
-          <div className="space-y-5 animate-fadeIn">
+          <div className="space-y-4 sm:space-y-5 animate-fadeIn">
             
-            {/* Workday & Welcome Card */}
-            <div className="bg-gradient-to-r from-brand-900 via-brand-950 to-slate-900 rounded-2xl p-5 text-white shadow-md border border-brand-800 space-y-4">
+            {/* Workday & Welcome Banner */}
+            <div className="bg-gradient-to-r from-brand-900 via-brand-950 to-slate-900 rounded-3xl p-4 sm:p-6 text-white shadow-md border border-brand-800 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-gold-400 bg-white/10 px-2 py-0.5 rounded">
-                    Employee Workstation
-                  </span>
-                  <h2 className="text-xl font-black text-white mt-1">
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-gold-300 bg-white/10 px-2.5 py-0.5 rounded-full border border-white/10">
+                      Workstation Portal
+                    </span>
+                    <span className="text-[11px] font-mono text-gold-300 font-bold">
+                      {activeEmployee?.employee_id || 'PSS001'}
+                    </span>
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black text-white">
                     Namaste, {activeEmployee?.name || 'Staff'}!
                   </h2>
-                  <p className="text-xs text-slate-300 flex items-center gap-1.5 mt-0.5">
+                  <p className="text-xs text-slate-300 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-gold-300" />
-                    <span>Today: {formatDisplayDate(todayStr)} (Asia/Kolkata)</span>
+                    <span>Today: {formatDisplayDate(todayStr)}</span>
+                    <span className="text-[10px] text-gold-300/80">• "सर्वे भवन्तु सुखिनः"</span>
                   </p>
                 </div>
 
-                {/* Start / End Day Session Controls */}
-                <div className="bg-white/10 p-3 rounded-xl border border-white/15 flex items-center space-x-3 self-start sm:self-auto">
+                {/* Shift Control Pill */}
+                <div className="bg-white/10 p-3 rounded-2xl border border-white/15 flex items-center space-x-3 self-start sm:self-auto shadow-inner">
                   <div>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Workday Status</p>
-                    <p className="text-xs font-bold text-white mt-0.5 flex items-center gap-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Shift Status</p>
+                    <p className="text-xs font-bold text-white mt-0.5 flex items-center gap-1.5">
                       {workdaySession?.active ? (
                         <>
-                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                          <span className="text-emerald-300">Started at {workdaySession.startedAt}</span>
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                          <span className="text-emerald-300">Started {workdaySession.startedAt}</span>
                         </>
                       ) : workdaySession?.endedAt ? (
-                        <span className="text-slate-400">Ended at {workdaySession.endedAt}</span>
+                        <span className="text-slate-400">Ended {workdaySession.endedAt}</span>
                       ) : (
-                        <span className="text-amber-300">Not started yet</span>
+                        <span className="text-amber-300">Shift Not Started</span>
                       )}
                     </p>
                   </div>
@@ -389,7 +431,7 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                   {!workdaySession?.active ? (
                     <button
                       onClick={handleStartWorkday}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1 shadow-xs active:scale-95"
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow-sm"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
                       <span>Start Shift</span>
@@ -397,7 +439,7 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                   ) : (
                     <button
                       onClick={handleEndWorkday}
-                      className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1 shadow-xs active:scale-95"
+                      className="px-3.5 py-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow-sm"
                     >
                       <Square className="w-3.5 h-3.5 fill-current" />
                       <span>End Shift</span>
@@ -406,121 +448,139 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                 </div>
               </div>
 
-              {/* Sync Status Banner */}
-              <div className="flex items-center justify-between bg-black/20 p-2.5 rounded-xl border border-white/10 text-xs">
+              {/* Cloud / Offline Sync Status Info Bar */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-black/25 p-3 rounded-2xl border border-white/10 text-xs gap-2">
                 <div className="flex items-center space-x-2">
                   {syncState.isOnline ? (
-                    <Wifi className="w-4 h-4 text-emerald-400" />
+                    <Wifi className="w-4 h-4 text-emerald-400 shrink-0" />
                   ) : (
-                    <WifiOff className="w-4 h-4 text-amber-400" />
+                    <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
                   )}
                   <span>
-                    Database Status: <strong className="text-white">{syncState.isOnline ? 'Online Cloud Synced' : 'Offline Mode (Local Auto-Save)'}</strong>
+                    Database Status: <strong className="text-white">{syncState.isOnline ? 'Online (Firebase Connected)' : 'Offline Mode (Local Auto-Save Active)'}</strong>
                   </span>
                 </div>
-                {syncState.pendingCount > 0 && (
-                  <span className="text-[11px] font-bold text-amber-300 bg-amber-900/60 px-2 py-0.5 rounded">
+                {syncState.pendingCount > 0 ? (
+                  <span className="text-[11px] font-bold text-amber-300 bg-amber-950/80 px-2.5 py-1 rounded-xl border border-amber-500/30">
                     {syncState.pendingCount} offline records waiting to upload
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-emerald-300 font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>All records synced</span>
                   </span>
                 )}
               </div>
             </div>
 
-            {/* Permitted Modules Fast-Access Action Cards */}
+            {/* Permitted Inventory Modules Touch Cards */}
             <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 mb-3">
-                Your Permitted Work Modules
-              </h3>
+              <div className="flex items-center justify-between mb-2.5">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Your Permitted Inventory Modules
+                </h3>
+                <span className="text-[11px] text-slate-500">Tap to record new entry</span>
+              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                
+                {/* 1. Raw Material Inward */}
                 {permitted.includes('raw_material') && (
                   <button
-                    onClick={() => setActiveTab('raw_material')}
-                    className="p-4 bg-white hover:bg-amber-50/50 rounded-2xl border-2 border-amber-200 text-left transition shadow-xs group flex items-start justify-between"
+                    onClick={() => navigateTo('raw_material')}
+                    className="p-4 bg-white hover:bg-amber-50/50 rounded-3xl border-2 border-amber-200 text-left transition shadow-xs group flex items-start justify-between active:scale-98"
                   >
                     <div>
-                      <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold mb-2">
-                        <PackagePlus className="w-5 h-5" />
+                      <div className="w-11 h-11 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold mb-2.5">
+                        <PackagePlus className="w-6 h-6" />
                       </div>
                       <h4 className="text-sm font-black text-slate-900 group-hover:text-amber-800">
                         1. Raw Material Inward
                       </h4>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Record Haldi, Mirchi, Dhaniya inward stock arrivals and custom batch numbers
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        Record Haldi, Mirchi & Dhaniya inward stock arrivals and manual batch numbers
                       </p>
                     </div>
+                    <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-amber-800 shrink-0 mt-2" />
                   </button>
                 )}
 
+                {/* 2. Processing & Grinding */}
                 {permitted.includes('processing') && (
                   <button
-                    onClick={() => setActiveTab('processing')}
-                    className="p-4 bg-white hover:bg-blue-50/50 rounded-2xl border-2 border-blue-200 text-left transition shadow-xs group flex items-start justify-between"
+                    onClick={() => navigateTo('processing')}
+                    className="p-4 bg-white hover:bg-blue-50/50 rounded-3xl border-2 border-blue-200 text-left transition shadow-xs group flex items-start justify-between active:scale-98"
                   >
                     <div>
-                      <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-800 flex items-center justify-center font-bold mb-2">
-                        <Cog className="w-5 h-5" />
+                      <div className="w-11 h-11 rounded-2xl bg-blue-100 text-blue-800 flex items-center justify-center font-bold mb-2.5">
+                        <Cog className="w-6 h-6" />
                       </div>
                       <h4 className="text-sm font-black text-slate-900 group-hover:text-blue-800">
                         2. Processing & Grinding
                       </h4>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Cleaning, grinding losses and multi-round powder production
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        Raw material cleaning, waste tracking, multi-round grinding & powder yield
                       </p>
                     </div>
+                    <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-blue-800 shrink-0 mt-2" />
                   </button>
                 )}
 
+                {/* 3. Packaging */}
                 {permitted.includes('packaging') && (
                   <button
-                    onClick={() => setActiveTab('packaging')}
-                    className="p-4 bg-white hover:bg-purple-50/50 rounded-2xl border-2 border-purple-200 text-left transition shadow-xs group flex items-start justify-between"
+                    onClick={() => navigateTo('packaging')}
+                    className="p-4 bg-white hover:bg-purple-50/50 rounded-3xl border-2 border-purple-200 text-left transition shadow-xs group flex items-start justify-between active:scale-98"
                   >
                     <div>
-                      <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-800 flex items-center justify-center font-bold mb-2">
-                        <Boxes className="w-5 h-5" />
+                      <div className="w-11 h-11 rounded-2xl bg-purple-100 text-purple-800 flex items-center justify-center font-bold mb-2.5">
+                        <Boxes className="w-6 h-6" />
                       </div>
                       <h4 className="text-sm font-black text-slate-900 group-hover:text-purple-800">
-                        3. Retail Packaging
+                        3. Packaging
                       </h4>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Pack 10g, 24g, 50g, 100g, 200g, 500g pouches from powder stock
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        Packet production (10g, 24g, 50g, 100g, 200g, 500g) & powder consumption
                       </p>
                     </div>
+                    <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-purple-800 shrink-0 mt-2" />
                   </button>
                 )}
 
+                {/* 4. Order / Sale */}
                 {permitted.includes('order_sale') && (
                   <button
-                    onClick={() => setActiveTab('order_sale')}
-                    className="p-4 bg-white hover:bg-emerald-50/50 rounded-2xl border-2 border-emerald-200 text-left transition shadow-xs group flex items-start justify-between"
+                    onClick={() => navigateTo('order_sale')}
+                    className="p-4 bg-white hover:bg-emerald-50/50 rounded-3xl border-2 border-emerald-200 text-left transition shadow-xs group flex items-start justify-between active:scale-98"
                   >
                     <div>
-                      <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold mb-2">
-                        <ShoppingBag className="w-5 h-5" />
+                      <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold mb-2.5">
+                        <ShoppingBag className="w-6 h-6" />
                       </div>
                       <h4 className="text-sm font-black text-slate-900 group-hover:text-emerald-800">
                         4. Order / Sale Dispatch
                       </h4>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Direct sales and customer dispatches strictly in KG weight
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        Factory dispatch and customer sales strictly in KG weight
                       </p>
                     </div>
+                    <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-emerald-800 shrink-0 mt-2" />
                   </button>
                 )}
+
               </div>
             </div>
 
             {/* My Recent Entries Feed */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+            <div className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
                   <Clock className="w-4 h-4 text-brand-800" />
-                  <span>My Recent Entries</span>
+                  <span>My Recent Activity</span>
                 </h3>
                 <button
-                  onClick={() => setActiveTab('ENTRIES')}
-                  className="text-xs font-bold text-brand-700 hover:underline"
+                  onClick={() => navigateTo('ENTRIES')}
+                  className="text-xs font-bold text-brand-800 hover:text-brand-900 underline"
                 >
                   View All ({allMyEntries.length})
                 </button>
@@ -529,162 +589,411 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
               {recentEntries.length > 0 ? (
                 <div className="divide-y divide-slate-100">
                   {recentEntries.map(entry => (
-                    <div key={entry.id} className="py-2.5 flex items-center justify-between text-xs">
-                      <div>
+                    <div key={entry.id} className="py-2.5 flex items-center justify-between text-xs gap-2">
+                      <div className="min-w-0">
                         <div className="flex items-center space-x-2">
-                          <span className="font-bold text-slate-900">{entry.product}</span>
-                          <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-mono">
+                          <span className="font-bold text-slate-900 truncate">{entry.product}</span>
+                          <span className="text-[10px] font-semibold bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded font-mono shrink-0">
                             {entry.batch}
                           </span>
-                          <span className="text-[10px] font-bold text-brand-700">
+                          <span className="text-[10px] font-bold text-brand-700 shrink-0">
                             {entry.module}
                           </span>
                         </div>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
+                        <p className="text-[11px] text-slate-400 mt-0.5 truncate">
                           ID: {entry.id} • {formatDisplayDate(entry.date)}
                         </p>
                       </div>
-                      <span className="font-mono font-bold text-slate-800">
-                        {entry.quantity}
-                      </span>
+                      <div className="text-right shrink-0">
+                        <span className="font-mono font-black text-slate-900 block">
+                          {entry.quantity}
+                        </span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${entry.synced ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                          {entry.synced ? 'Synced' : 'Pending'}
+                        </span>
+                      </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-slate-400 py-3 text-center">
-                  You haven't recorded any entries yet today.
-                </p>
+                <div className="text-center py-6 text-slate-400 space-y-1">
+                  <Clock className="w-8 h-8 mx-auto text-slate-300 stroke-1" />
+                  <p className="text-xs font-medium">No records submitted under your ID today.</p>
+                </div>
               )}
             </div>
 
           </div>
         )}
 
-        {/* WORK MODULE: RAW MATERIAL */}
+        {/* 2. RAW MATERIAL INWARD */}
         {activeTab === 'raw_material' && permitted.includes('raw_material') && (
-          <RawMaterialInward activeEmployee={activeEmployee} />
-        )}
-
-        {/* WORK MODULE: PROCESSING */}
-        {activeTab === 'processing' && permitted.includes('processing') && (
-          <ProcessingModule activeEmployee={activeEmployee} />
-        )}
-
-        {/* WORK MODULE: PACKAGING */}
-        {activeTab === 'packaging' && permitted.includes('packaging') && (
-          <PackagingModule activeEmployee={activeEmployee} />
-        )}
-
-        {/* WORK MODULE: ORDER / SALE */}
-        {activeTab === 'order_sale' && permitted.includes('order_sale') && (
-          <OrderSaleModule activeEmployee={activeEmployee} />
-        )}
-
-        {/* MY ENTRIES LIST */}
-        {activeTab === 'ENTRIES' && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 animate-fadeIn">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-black text-slate-900">My Recorded Entries</h3>
-                <p className="text-xs text-slate-500">History of entries submitted under your name ({activeEmployee?.name})</p>
-              </div>
-              <span className="text-xs font-bold bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full">
-                {allMyEntries.length} Records
-              </span>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between sm:hidden pb-1">
+              <button 
+                onClick={() => navigateTo('HOME')}
+                className="text-xs font-bold text-brand-800 flex items-center gap-1"
+              >
+                ← Back to Home
+              </button>
             </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[10px]">
-                    <th className="py-2.5 px-3">Entry ID</th>
-                    <th className="py-2.5 px-3">Date</th>
-                    <th className="py-2.5 px-3">Module</th>
-                    <th className="py-2.5 px-3">Product</th>
-                    <th className="py-2.5 px-3">Batch ID</th>
-                    <th className="py-2.5 px-3 text-right">Quantity</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
-                  {allMyEntries.length > 0 ? (
-                    allMyEntries.map(entry => (
-                      <tr key={entry.id} className="hover:bg-slate-50/80">
-                        <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{entry.id}</td>
-                        <td className="py-2.5 px-3">{formatDisplayDate(entry.date)}</td>
-                        <td className="py-2.5 px-3 font-bold text-brand-800">{entry.module}</td>
-                        <td className="py-2.5 px-3 font-semibold">{entry.product}</td>
-                        <td className="py-2.5 px-3 font-mono">{entry.batch}</td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">{entry.quantity}</td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan="6" className="py-6 text-center text-slate-400">
-                        No entries recorded yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <RawMaterialInward activeEmployee={activeEmployee} />
           </div>
         )}
 
-        {/* MY PROFILE */}
+        {/* 3. PROCESSING & GRINDING */}
+        {activeTab === 'processing' && permitted.includes('processing') && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between sm:hidden pb-1">
+              <button 
+                onClick={() => navigateTo('HOME')}
+                className="text-xs font-bold text-brand-800 flex items-center gap-1"
+              >
+                ← Back to Home
+              </button>
+            </div>
+            <ProcessingModule activeEmployee={activeEmployee} />
+          </div>
+        )}
+
+        {/* 4. PACKAGING */}
+        {activeTab === 'packaging' && permitted.includes('packaging') && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between sm:hidden pb-1">
+              <button 
+                onClick={() => navigateTo('HOME')}
+                className="text-xs font-bold text-brand-800 flex items-center gap-1"
+              >
+                ← Back to Home
+              </button>
+            </div>
+            <PackagingModule activeEmployee={activeEmployee} />
+          </div>
+        )}
+
+        {/* 5. ORDER / SALE */}
+        {activeTab === 'order_sale' && permitted.includes('order_sale') && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between sm:hidden pb-1">
+              <button 
+                onClick={() => navigateTo('HOME')}
+                className="text-xs font-bold text-brand-800 flex items-center gap-1"
+              >
+                ← Back to Home
+              </button>
+            </div>
+            <OrderSaleModule activeEmployee={activeEmployee} />
+          </div>
+        )}
+
+        {/* 6. MY ENTRIES */}
+        {activeTab === 'ENTRIES' && (
+          <div className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-4 animate-fadeIn">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-2">
+              <div>
+                <h3 className="text-base font-black text-slate-900 uppercase">My Recorded Entries</h3>
+                <p className="text-xs text-slate-500">
+                  Entries registered under {activeEmployee?.name} ({activeEmployee?.employee_id || activeEmployee?.id})
+                </p>
+              </div>
+              <span className="text-xs font-bold bg-brand-50 text-brand-900 border border-brand-200 px-3 py-1 rounded-full self-start sm:self-auto">
+                {allMyEntries.length} Total Records
+              </span>
+            </div>
+
+            {/* Mobile-First Card View (No Horizontal Scroll Overflow) */}
+            {allMyEntries.length > 0 ? (
+              <div className="space-y-2.5">
+                {allMyEntries.map(entry => (
+                  <div 
+                    key={entry.id} 
+                    className="p-3.5 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200/80 space-y-2 transition"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono font-bold text-brand-900 text-xs bg-white px-2 py-0.5 rounded border border-slate-200">
+                          {entry.id}
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-700">
+                          {entry.module}
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        entry.synced 
+                          ? 'bg-emerald-100 text-emerald-800' 
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {entry.synced ? 'Synced' : 'Pending Sync'}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-baseline pt-1">
+                      <div>
+                        <div className="font-extrabold text-sm text-slate-900">
+                          {entry.product}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          Batch: <span className="font-mono font-semibold text-slate-800">{entry.batch || 'N/A'}</span> • {formatDisplayDate(entry.date)}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono font-black text-sm text-slate-900">
+                          {entry.quantity}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-10 text-slate-400 space-y-2">
+                <ListFilter className="w-10 h-10 mx-auto text-slate-300 stroke-1" />
+                <p className="text-xs font-semibold">No entries have been recorded under your name yet.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 7. MY PROFILE */}
         {activeTab === 'PROFILE' && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs max-w-lg mx-auto space-y-5 animate-fadeIn">
-            <div className="flex items-center space-x-3.5 pb-4 border-b border-slate-100">
-              <div className="w-12 h-12 rounded-2xl bg-brand-900 text-gold-300 flex items-center justify-center font-bold text-lg">
-                <User className="w-6 h-6" />
+          <div className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-5 animate-fadeIn">
+            
+            <div className="flex items-center space-x-3 pb-4 border-b border-slate-100">
+              <div className="w-14 h-14 rounded-2xl bg-brand-100 text-brand-900 flex items-center justify-center font-black text-xl border-2 border-brand-200">
+                <User className="w-8 h-8" />
               </div>
               <div>
-                <h3 className="text-base font-black text-slate-900 uppercase">
-                  {activeEmployee?.name || 'Staff Member'}
+                <h3 className="text-lg font-black text-slate-900">
+                  {activeEmployee?.name || 'Factory Employee'}
                 </h3>
-                <p className="text-xs text-slate-500 font-semibold">
-                  Employee ID: {activeEmployee?.id} • Role: {activeEmployee?.role}
+                <p className="text-xs text-brand-800 font-bold font-mono">
+                  Employee ID: {activeEmployee?.employee_id || activeEmployee?.id || 'PSS001'}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  {activeEmployee?.designation || activeEmployee?.role || 'Staff'} • {activeEmployee?.department || 'Production'}
                 </p>
               </div>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Authorized Work Modules
-                </p>
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {permitted.map(mod => (
-                    <span key={mod} className="bg-white border border-slate-200 px-2 py-0.5 rounded font-bold text-slate-700 capitalize">
-                      {mod.replace('_', ' ')}
+            {/* Details Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                <span className="text-[10px] font-bold text-slate-500 uppercase block">Mobile Number</span>
+                <span className="font-bold text-slate-900 text-sm mt-0.5 block">
+                  {activeEmployee?.mobile || 'Not Configured'}
+                </span>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                <span className="text-[10px] font-bold text-slate-500 uppercase block">Account Status</span>
+                <span className="font-bold text-emerald-700 text-sm mt-0.5 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span>Active Workstation Account</span>
+                </span>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 sm:col-span-2">
+                <span className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">
+                  Authorized Factory Modules
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {permitted.map(m => (
+                    <span 
+                      key={m} 
+                      className="px-2.5 py-1 bg-white border border-slate-300 rounded-xl text-[11px] font-bold text-slate-800 flex items-center gap-1"
+                    >
+                      <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />
+                      <span>{m.replace('_', ' ').toUpperCase()}</span>
                     </span>
                   ))}
                 </div>
               </div>
 
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Today's Shift Attendance
-                </p>
-                <p className="text-slate-800 font-semibold">
-                  Shift: {workdaySession?.startedAt ? `Started at ${workdaySession.startedAt}` : 'Shift not started'}
-                  {workdaySession?.endedAt && ` • Finished at ${workdaySession.endedAt}`}
-                </p>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  onClick={onLogout}
-                  className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition flex items-center justify-center space-x-2 shadow-xs"
-                >
-                  <LogOut className="w-4 h-4" />
-                  <span>Logout from Workstation</span>
-                </button>
-              </div>
             </div>
+
+            {/* Plant Office Info Card */}
+            <div className="p-4 bg-brand-50 rounded-2xl border border-brand-200 text-xs text-brand-950 space-y-2">
+              <div className="flex items-center space-x-2 font-bold text-xs text-brand-900">
+                <Building2 className="w-4 h-4 text-brand-800" />
+                <span>Patel Sahab Spices Manufacturing Facility</span>
+              </div>
+              <p className="text-[11px] text-slate-700 leading-relaxed">
+                <strong>Plant Address:</strong> Village Panwa, Tehsil Kasrawad, Dist. Khargone (M.P.)
+              </p>
+              <p className="text-[11px] text-slate-600">
+                To reset your login password or change permissions, please contact Authorized Signatory <strong>Sujeet Patidar</strong>.
+              </p>
+            </div>
+
+            <button
+              onClick={onLogout}
+              className="w-full py-3 bg-slate-900 hover:bg-slate-800 active:scale-98 text-white font-bold rounded-2xl text-xs uppercase tracking-wider transition flex items-center justify-center space-x-2"
+            >
+              <LogOut className="w-4 h-4 text-gold-300" />
+              <span>Logout from Workstation</span>
+            </button>
+
           </div>
         )}
 
       </main>
+
+      {/* MOBILE BOTTOM NAVIGATION BAR (Thumb-friendly for 1-hand use) */}
+      <nav className="sm:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 shadow-2xl z-40 px-2 py-1.5 flex items-center justify-around">
+        
+        {/* 1. Home */}
+        <button
+          type="button"
+          onClick={() => navigateTo('HOME')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition ${
+            activeTab === 'HOME'
+              ? 'text-brand-800 font-black'
+              : 'text-slate-500 hover:text-slate-800 font-bold'
+          }`}
+        >
+          <Home className={`w-5 h-5 ${activeTab === 'HOME' ? 'stroke-[2.5]' : 'stroke-2'}`} />
+          <span className="text-[10px] mt-0.5">Home</span>
+        </button>
+
+        {/* 2. Raw Material (if permitted) */}
+        {permitted.includes('raw_material') && (
+          <button
+            type="button"
+            onClick={() => navigateTo('raw_material')}
+            className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition ${
+              activeTab === 'raw_material'
+                ? 'text-amber-800 font-black'
+                : 'text-slate-500 hover:text-slate-800 font-bold'
+            }`}
+          >
+            <PackagePlus className={`w-5 h-5 ${activeTab === 'raw_material' ? 'stroke-[2.5]' : 'stroke-2'}`} />
+            <span className="text-[10px] mt-0.5">Raw</span>
+          </button>
+        )}
+
+        {/* 3. Processing (if permitted) */}
+        {permitted.includes('processing') && (
+          <button
+            type="button"
+            onClick={() => navigateTo('processing')}
+            className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition ${
+              activeTab === 'processing'
+                ? 'text-blue-800 font-black'
+                : 'text-slate-500 hover:text-slate-800 font-bold'
+            }`}
+          >
+            <Cog className={`w-5 h-5 ${activeTab === 'processing' ? 'stroke-[2.5]' : 'stroke-2'}`} />
+            <span className="text-[10px] mt-0.5">Grinding</span>
+          </button>
+        )}
+
+        {/* 4. Packaging (if permitted) */}
+        {permitted.includes('packaging') && (
+          <button
+            type="button"
+            onClick={() => navigateTo('packaging')}
+            className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition ${
+              activeTab === 'packaging'
+                ? 'text-purple-800 font-black'
+                : 'text-slate-500 hover:text-slate-800 font-bold'
+            }`}
+          >
+            <Boxes className={`w-5 h-5 ${activeTab === 'packaging' ? 'stroke-[2.5]' : 'stroke-2'}`} />
+            <span className="text-[10px] mt-0.5">Packing</span>
+          </button>
+        )}
+
+        {/* 5. More Menu Drawer Toggle */}
+        <button
+          type="button"
+          onClick={() => setIsMoreMenuOpen(true)}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition ${
+            ['order_sale', 'ENTRIES', 'PROFILE'].includes(activeTab)
+              ? 'text-brand-800 font-black'
+              : 'text-slate-500 hover:text-slate-800 font-bold'
+          }`}
+        >
+          <Menu className={`w-5 h-5 ${['order_sale', 'ENTRIES', 'PROFILE'].includes(activeTab) ? 'stroke-[2.5]' : 'stroke-2'}`} />
+          <span className="text-[10px] mt-0.5">More</span>
+        </button>
+
+      </nav>
+
+      {/* MOBILE "MORE" BOTTOM SHEET DRAWER */}
+      {isMoreMenuOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex flex-col justify-end animate-fadeIn sm:hidden">
+          <div className="bg-white rounded-t-3xl p-5 shadow-2xl border-t border-slate-200 space-y-4 animate-slideUp">
+            
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center space-x-2">
+                <span className="font-mono font-bold text-xs bg-gold-400 text-slate-900 px-2 py-0.5 rounded">
+                  {activeEmployee?.employee_id || 'PSS001'}
+                </span>
+                <span className="font-black text-slate-900 text-sm">
+                  {activeEmployee?.name}
+                </span>
+              </div>
+              <button 
+                onClick={() => setIsMoreMenuOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-1 text-sm font-bold text-slate-800">
+              
+              {permitted.includes('order_sale') && (
+                <button
+                  onClick={() => navigateTo('order_sale')}
+                  className="w-full p-3 rounded-2xl hover:bg-emerald-50 text-left flex items-center justify-between transition"
+                >
+                  <span className="flex items-center space-x-3 text-emerald-800">
+                    <ShoppingBag className="w-5 h-5" />
+                    <span>Order / Sale Dispatch (KG)</span>
+                  </span>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </button>
+              )}
+
+              <button
+                onClick={() => navigateTo('ENTRIES')}
+                className="w-full p-3 rounded-2xl hover:bg-slate-100 text-left flex items-center justify-between transition"
+              >
+                <span className="flex items-center space-x-3">
+                  <ListFilter className="w-5 h-5 text-brand-800" />
+                  <span>My Recorded Entries ({allMyEntries.length})</span>
+                </span>
+                <ChevronRight className="w-4 h-4 text-slate-400" />
+              </button>
+
+              <button
+                onClick={() => navigateTo('PROFILE')}
+                className="w-full p-3 rounded-2xl hover:bg-slate-100 text-left flex items-center justify-between transition"
+              >
+                <span className="flex items-center space-x-3">
+                  <User className="w-5 h-5 text-slate-700" />
+                  <span>My Profile & Workstation Details</span>
+                </span>
+                <ChevronRight className="w-4 h-4 text-slate-400" />
+              </button>
+
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => { setIsMoreMenuOpen(false); onLogout(); }}
+                  className="w-full p-3 rounded-2xl bg-red-50 text-red-700 hover:bg-red-100 text-left flex items-center space-x-3 transition font-black"
+                >
+                  <LogOut className="w-5 h-5 text-red-600" />
+                  <span>Logout from Workstation</span>
+                </button>
+              </div>
+
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

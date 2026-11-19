@@ -1,51 +1,61 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
-  ShieldCheck, 
-  User, 
-  KeyRound, 
   Lock, 
-  ArrowRight, 
+  User, 
+  Eye, 
+  EyeOff, 
+  ShieldCheck, 
+  KeyRound, 
+  HelpCircle, 
+  X, 
   CheckCircle2, 
   AlertTriangle,
-  Factory
+  ArrowRight,
+  PhoneCall,
+  Building2,
+  Sparkles
 } from 'lucide-react';
-import { getDB } from '../services/db';
-import { verifyAdminPin } from '../services/adminAuth';
+import { authenticateEmployee, verifyAdminPin } from '../services/adminAuth';
 
 export default function LoginPortal({ onEmployeeLogin, onAdminLogin }) {
-  const [employees, setEmployees] = useState([]);
-  const [selectedEmpId, setSelectedEmpId] = useState('');
+  // Mode: 'employee' | 'admin'
+  const [loginMode, setLoginMode] = useState('employee');
+
+  // Employee Login State
+  const [employeeId, setEmployeeId] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Admin PIN State
   const [adminPin, setAdminPin] = useState('');
-  const [errorMsg, setErrorMsg] = useState(null);
+
+  // UI state
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [showForgotModal, setShowForgotModal] = useState(false);
+  const [showDemoHelp, setShowDemoHelp] = useState(false);
 
-  useEffect(() => {
-    loadEmployees();
-  }, []);
-
-  const loadEmployees = async () => {
-    try {
-      const db = await getDB();
-      const list = await db.getAll('employees');
-      const activeList = list.filter(e => e.active !== false);
-      setEmployees(activeList);
-      if (activeList.length > 0) {
-        setSelectedEmpId(activeList[0].id);
-      }
-    } catch (err) {
-      console.error('Failed to load employee list:', err);
-    }
-  };
-
-  const handleEmployeeSubmit = (e) => {
+  const handleEmployeeSubmit = async (e) => {
     e.preventDefault();
-    const emp = employees.find(e => e.id === selectedEmpId);
-    if (!emp) {
-      setErrorMsg('Please select an active employee.');
+    if (!employeeId.trim()) {
+      setErrorMsg('Please enter your Employee ID (e.g. PSS001).');
       return;
     }
+    if (!password) {
+      setErrorMsg('Please enter your password.');
+      return;
+    }
+
+    setLoading(true);
     setErrorMsg(null);
-    onEmployeeLogin(emp);
+    try {
+      const emp = await authenticateEmployee(employeeId.trim(), password);
+      onEmployeeLogin(emp);
+    } catch (err) {
+      setErrorMsg(err.message || 'Login failed. Please check credentials.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleAdminSubmit = async (e) => {
@@ -65,136 +75,357 @@ export default function LoginPortal({ onEmployeeLogin, onAdminLogin }) {
         setErrorMsg('Incorrect Admin PIN. Default PIN is 1234.');
       }
     } catch (err) {
-      setErrorMsg(err.message || 'Verification error.');
+      setErrorMsg(err.message || 'Admin verification error.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 sm:p-6 font-sans">
+    <div className="min-h-screen bg-gradient-to-b from-brand-50 via-white to-slate-100 flex flex-col justify-between items-center p-4 sm:p-6 font-sans">
       
-      {/* Brand Header */}
-      <div className="max-w-md w-full text-center space-y-3 mb-6">
-        <div className="w-16 h-16 rounded-2xl bg-white/10 p-2 mx-auto flex items-center justify-center border-2 border-gold-400/50 shadow-xl">
-          <img src="/icon.svg" alt="Patel Sahab Spices" className="w-12 h-12 object-contain" />
+      {/* Top Brand Header */}
+      <div className="w-full max-w-sm sm:max-w-md mx-auto pt-4 sm:pt-8 text-center">
+        
+        {/* Official Logo */}
+        <div className="inline-block p-2 bg-white rounded-3xl shadow-lg border border-red-100 mb-3 transition transform hover:scale-102">
+          <img 
+            src="/logo.jpg" 
+            alt="Patel Sahab Spices Logo" 
+            className="w-28 sm:w-36 h-auto mx-auto object-contain rounded-2xl" 
+          />
         </div>
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-black text-white uppercase tracking-wider">
-            PATEL SAHAB <span className="text-gold-400">SPICES</span>
+
+        {/* Brand Titles */}
+        <div className="space-y-0.5">
+          <h1 className="text-xl sm:text-2xl font-black text-brand-900 uppercase tracking-wide">
+            PATEL SAHAB SPICES
           </h1>
-          <p className="text-xs text-slate-400 tracking-widest uppercase font-semibold mt-0.5">
-            Production & Inventory Management System
+          <p className="text-[11px] sm:text-xs text-brand-800 font-bold uppercase tracking-widest">
+            PRODUCTION & INVENTORY MANAGEMENT
           </p>
-          <p className="text-[11px] text-gold-300/80 mt-1">
-            Plant: Village Panwa, Tehsil Kasrawad, Khargone (M.P.)
-          </p>
+          <div className="inline-block bg-amber-50 border border-amber-200/80 px-2.5 py-0.5 rounded-full mt-1.5">
+            <span className="text-[11px] font-semibold text-amber-900 tracking-wide">
+              "सर्वे भवन्तु सुखिनः"
+            </span>
+          </div>
         </div>
+
       </div>
 
-      {errorMsg && (
-        <div className="max-w-md w-full mb-4 bg-red-950/80 border border-red-500 text-red-200 text-xs p-3 rounded-xl flex items-center space-x-2">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
-          <span>{errorMsg}</span>
+      {/* Main Login Card */}
+      <div className="w-full max-w-sm sm:max-w-md my-6">
+        
+        {/* Error Notification */}
+        {errorMsg && (
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-800 text-xs sm:text-sm p-3.5 rounded-2xl flex items-start space-x-2.5 shadow-sm animate-shake">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
+            <div className="flex-1 font-semibold leading-relaxed">{errorMsg}</div>
+            <button 
+              onClick={() => setErrorMsg(null)}
+              className="text-red-400 hover:text-red-700 p-0.5"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        <div className="bg-white rounded-3xl p-5 sm:p-7 shadow-xl border border-slate-200/80 space-y-5">
+          
+          {/* Mode Switcher Tabs */}
+          <div className="flex p-1 bg-slate-100 rounded-2xl border border-slate-200 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => { setLoginMode('employee'); setErrorMsg(null); }}
+              className={`flex-1 py-2.5 rounded-xl transition flex items-center justify-center space-x-1.5 ${
+                loginMode === 'employee'
+                  ? 'bg-brand-800 text-white shadow-md'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <User className="w-4 h-4" />
+              <span>Employee Login</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setLoginMode('admin'); setErrorMsg(null); }}
+              className={`flex-1 py-2.5 rounded-xl transition flex items-center justify-center space-x-1.5 ${
+                loginMode === 'admin'
+                  ? 'bg-slate-900 text-gold-300 shadow-md'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>Admin Center</span>
+            </button>
+          </div>
+
+          {/* 1. EMPLOYEE LOGIN FORM */}
+          {loginMode === 'employee' ? (
+            <form onSubmit={handleEmployeeSubmit} className="space-y-4">
+              
+              {/* Employee ID */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Employee ID <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                    <User className="w-5 h-5 text-brand-700" />
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck="false"
+                    value={employeeId}
+                    onChange={(e) => setEmployeeId(e.target.value.toUpperCase())}
+                    placeholder="e.g. PSS001"
+                    className="w-full pl-11 pr-3 py-3 text-base sm:text-sm font-bold font-mono text-slate-900 bg-slate-50 border border-slate-300 rounded-2xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700 focus:border-brand-700 transition"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1 pl-1">
+                  Format: PSS001, PSS002, PSS003, PSS004
+                </p>
+              </div>
+
+              {/* Password */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Password <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                    <Lock className="w-5 h-5 text-brand-700" />
+                  </div>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full pl-11 pr-11 py-3 text-base sm:text-sm font-mono text-slate-900 bg-slate-50 border border-slate-300 rounded-2xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700 focus:border-brand-700 transition"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-700 transition p-1"
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3.5 bg-gradient-to-r from-brand-800 to-brand-900 hover:from-brand-700 hover:to-brand-800 active:scale-98 text-white font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg shadow-brand-900/20 transition flex items-center justify-center space-x-2 disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span>Verifying Employee...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Login to Workstation</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+
+              {/* Forgot Password Link */}
+              <div className="pt-2 text-center">
+                <button
+                  type="button"
+                  onClick={() => setShowForgotModal(true)}
+                  className="text-xs text-brand-800 hover:text-brand-900 font-semibold underline underline-offset-4 decoration-brand-300 hover:decoration-brand-700 transition"
+                >
+                  Forgot Password / Contact Admin?
+                </button>
+              </div>
+
+              {/* Demo Credentials Helper Pill */}
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowDemoHelp(!showDemoHelp)}
+                  className="w-full py-1.5 px-3 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-[11px] font-bold text-amber-900 flex items-center justify-between transition"
+                >
+                  <span className="flex items-center space-x-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+                    <span>View Factory Employee IDs (Demo/Default)</span>
+                  </span>
+                  <span>{showDemoHelp ? '▲' : '▼'}</span>
+                </button>
+
+                {showDemoHelp && (
+                  <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] space-y-1 text-slate-700">
+                    <p className="font-bold text-slate-900 pb-1 border-b border-slate-200">
+                      Default Initial Password: <span className="font-mono text-brand-800 bg-white px-1.5 py-0.5 rounded border border-slate-300">123456</span>
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
+                      <button 
+                        type="button" 
+                        onClick={() => { setEmployeeId('PSS001'); setPassword('123456'); }}
+                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
+                      >
+                        <div className="font-mono font-bold text-brand-800">PSS001</div>
+                        <div className="text-[10px] text-slate-500">Ramesh Patel (Supv)</div>
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={() => { setEmployeeId('PSS002'); setPassword('123456'); }}
+                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
+                      >
+                        <div className="font-mono font-bold text-brand-800">PSS002</div>
+                        <div className="text-[10px] text-slate-500">Suresh (Operator)</div>
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={() => { setEmployeeId('PSS003'); setPassword('123456'); }}
+                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
+                      >
+                        <div className="font-mono font-bold text-brand-800">PSS003</div>
+                        <div className="text-[10px] text-slate-500">Dinesh (Packaging)</div>
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={() => { setEmployeeId('PSS004'); setPassword('123456'); }}
+                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
+                      >
+                        <div className="font-mono font-bold text-brand-800">PSS004</div>
+                        <div className="text-[10px] text-slate-500">Mukesh (Godown)</div>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+            </form>
+          ) : (
+            /* 2. ADMIN PIN UNLOCK FORM */
+            <form onSubmit={handleAdminSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Business Owner / Admin PIN <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                    <KeyRound className="w-5 h-5 text-emerald-600" />
+                  </div>
+                  <input
+                    type="password"
+                    maxLength={6}
+                    autoFocus
+                    required
+                    value={adminPin}
+                    onChange={(e) => setAdminPin(e.target.value)}
+                    placeholder="••••"
+                    className="w-full pl-11 pr-3 py-3 text-lg font-mono font-bold tracking-widest text-center text-slate-900 bg-slate-50 border border-slate-300 rounded-2xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition"
+                  />
+                </div>
+                <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1 pl-1">
+                  <span>Authorized Personnel Only</span>
+                  <span>Default PIN: 1234</span>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 active:scale-98 text-gold-300 font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg transition flex items-center justify-center space-x-2 disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-gold-300 border-t-transparent rounded-full animate-spin"></div>
+                    <span>Unlocking Admin Portal...</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                    <span>Unlock Business Dashboard</span>
+                  </>
+                )}
+              </button>
+
+              <p className="text-[11px] text-slate-500 text-center leading-relaxed pt-1">
+                Full factory stock overview, 8-sheet Excel export, staff credential management and batch traceability.
+              </p>
+            </form>
+          )}
+
+        </div>
+
+      </div>
+
+      {/* Forgot Password / Contact Admin Modal */}
+      {showForgotModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2 text-brand-800">
+                <HelpCircle className="w-5 h-5" />
+                <h3 className="text-base font-black uppercase">Password Assistance</h3>
+              </div>
+              <button 
+                onClick={() => setShowForgotModal(false)}
+                className="text-slate-400 hover:text-slate-700 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
+              <p>
+                To maintain production security, factory employee passwords can only be reset by the <strong>Authorized Business Owner / Plant Admin</strong>.
+              </p>
+              
+              <div className="p-3.5 bg-brand-50 border border-brand-200 rounded-2xl space-y-2 text-brand-900">
+                <div className="flex items-center space-x-2 font-bold text-xs">
+                  <Building2 className="w-4 h-4 text-brand-700" />
+                  <span>Patel Sahab Spices Factory Office</span>
+                </div>
+                <div className="text-[11px] text-slate-700">
+                  <strong>Authorized Signatory:</strong> Sujeet Patidar
+                </div>
+                <div className="text-[11px] text-slate-700">
+                  <strong>Location:</strong> Village Panwa, Tehsil Kasrawad, Khargone (M.P.)
+                </div>
+                <div className="flex items-center space-x-2 pt-1 font-bold text-[11px] text-brand-800">
+                  <PhoneCall className="w-3.5 h-3.5 text-brand-700" />
+                  <span>Contact Incharge at Factory Workstation</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-500 italic">
+                * Newly created employee accounts have the initial password set to <span className="font-mono font-bold text-slate-700">123456</span> unless modified by Admin.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowForgotModal(false)}
+              className="w-full py-2.5 bg-slate-900 text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:bg-slate-800 transition"
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Two Portal Cards */}
-      <div className="max-w-md w-full space-y-4">
-        
-        {/* 1. EMPLOYEE WORKSTATION LOGIN */}
-        <div className="bg-slate-800/90 rounded-2xl p-5 border border-slate-700 shadow-xl space-y-3">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-brand-900/60 text-gold-300 flex items-center justify-center border border-gold-400/30">
-              <User className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-sm font-black text-white uppercase tracking-wide">
-                1. Factory Employee Panel
-              </h2>
-              <p className="text-[11px] text-slate-400">
-                Simple daily operations: Raw Inward, Grinding, Packaging & Sales
-              </p>
-            </div>
-          </div>
-
-          <form onSubmit={handleEmployeeSubmit} className="space-y-3 pt-1">
-            <div>
-              <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                Select Your Name:
-              </label>
-              <select
-                value={selectedEmpId}
-                onChange={(e) => setSelectedEmpId(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 text-white font-bold rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-gold-400"
-              >
-                {employees.map(emp => (
-                  <option key={emp.id} value={emp.id}>
-                    {emp.name} ({emp.role})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full py-2.5 bg-brand-800 hover:bg-brand-700 text-white font-black rounded-xl text-xs uppercase tracking-wider transition flex items-center justify-center space-x-2 shadow-md active:scale-98"
-            >
-              <span>Enter Employee Workstation</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </form>
-        </div>
-
-        {/* 2. ADMIN CONTROL CENTER LOGIN */}
-        <div className="bg-slate-800/90 rounded-2xl p-5 border border-slate-700 shadow-xl space-y-3">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-950/60 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-sm font-black text-white uppercase tracking-wide">
-                2. Business Owner / Admin Panel
-              </h2>
-              <p className="text-[11px] text-slate-400">
-                Live dashboard, stock oversight, staff permissions & 8-sheet Excel export
-              </p>
-            </div>
-          </div>
-
-          <form onSubmit={handleAdminSubmit} className="space-y-3 pt-1">
-            <div>
-              <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                Enter Admin PIN:
-              </label>
-              <input
-                type="password"
-                maxLength={6}
-                placeholder="••••"
-                value={adminPin}
-                onChange={(e) => setAdminPin(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 text-white font-mono font-bold text-center tracking-widest rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <span className="text-[10px] text-slate-500 block text-right mt-0.5">
-                Default PIN: 1234
-              </span>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-black rounded-xl text-xs uppercase tracking-wider transition flex items-center justify-center space-x-2 shadow-md active:scale-98"
-            >
-              <KeyRound className="w-4 h-4" />
-              <span>{loading ? 'Verifying...' : 'Unlock Admin Portal'}</span>
-            </button>
-          </form>
-        </div>
-
-      </div>
-
-      <footer className="mt-8 text-center text-[10px] text-slate-500 font-semibold tracking-wider uppercase">
-        PATEL SAHAB ENTERPRISES LLP • STRICTLY PRODUCTION & INVENTORY MANAGEMENT
+      {/* Footer Branding */}
+      <footer className="w-full max-w-sm sm:max-w-md text-center py-4 space-y-1">
+        <p className="text-[11px] font-bold text-slate-700 uppercase tracking-widest">
+          PATEL SAHAB ENTERPRISES LLP
+        </p>
+        <p className="text-[10px] text-slate-400">
+          Factory Plant: Village Panwa, Tehsil Kasrawad, Dist. Khargone (M.P.)
+        </p>
       </footer>
 
     </div>

@@ -20,6 +20,7 @@ import {
   getNextProcessingRound 
 } from '../services/inventoryEngine';
 import { queueSyncRecord } from '../services/syncService';
+import SaveConfirmationModal from './SaveConfirmationModal';
 
 export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }) {
   const [availableBatches, setAvailableBatches] = useState([]);
@@ -27,6 +28,7 @@ export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }
   const [history, setHistory] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBatchFilter, setSelectedBatchFilter] = useState('');
+  const [saveConfirmation, setSaveConfirmation] = useState(null);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -215,8 +217,17 @@ export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }
       // 1. Save to local IndexedDB
       await db.add('processing', record);
 
-      // 2. Queue for Google Sheets synchronization
+      // 2. Queue for Firebase synchronization
       await queueSyncRecord('PROCESSING', record);
+
+      setSaveConfirmation({
+        entryId: record.entry_id,
+        date: record.date,
+        productName: record.material_name,
+        quantity: `${record.net_powder_kg} KG Powder (Round ${record.processing_round})`,
+        batchId: record.batch_id,
+        moduleName: 'Processing & Grinding'
+      });
 
       setSuccessMsg(
         `Processing Round ${record.processing_round} saved for Batch ${record.batch_id}! Produced ${record.net_powder_kg} KG powder with ${record.total_loss_kg} KG total loss.`
@@ -446,11 +457,12 @@ export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }
                       type="number"
                       step="0.001"
                       min="0.001"
+                      inputMode="decimal"
                       required
                       placeholder={`Max ${selectedBatchData?.remainingUnprocessedKg || 0}`}
                       value={formData.grossRawKg}
                       onChange={(e) => handleInputChange('grossRawKg', e.target.value)}
-                      className="w-full bg-white border-2 border-slate-300 text-slate-900 font-black rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-600"
+                      className="w-full bg-white border-2 border-slate-300 text-slate-900 font-black rounded-xl px-3 py-2.5 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-600"
                     />
                     <span className="absolute right-3 top-3 text-xs font-bold text-slate-400">KG</span>
                   </div>
@@ -469,11 +481,12 @@ export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }
                       type="number"
                       step="0.001"
                       min="0"
+                      inputMode="decimal"
                       required
                       placeholder="Cleaned seed/root output"
                       value={formData.netRawKg}
                       onChange={(e) => handleInputChange('netRawKg', e.target.value)}
-                      className="w-full bg-white border-2 border-slate-300 text-slate-900 font-black rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-600"
+                      className="w-full bg-white border-2 border-slate-300 text-slate-900 font-black rounded-xl px-3 py-2.5 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-600"
                     />
                     <span className="absolute right-3 top-3 text-xs font-bold text-slate-400">KG</span>
                   </div>
@@ -492,11 +505,12 @@ export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }
                       type="number"
                       step="0.001"
                       min="0"
+                      inputMode="decimal"
                       required
                       placeholder="Final grinded powder"
                       value={formData.netPowderKg}
                       onChange={(e) => handleInputChange('netPowderKg', e.target.value)}
-                      className="w-full bg-white border-2 border-emerald-400 text-emerald-950 font-black rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                      className="w-full bg-white border-2 border-emerald-400 text-emerald-950 font-black rounded-xl px-3 py-2.5 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
                     />
                     <span className="absolute right-3 top-3 text-xs font-bold text-slate-400">KG</span>
                   </div>
@@ -660,6 +674,13 @@ export default function ProcessingModule({ activeEmployee, onOpenEmployeeModal }
         </div>
 
       </div>
+
+      {/* Save Confirmation Modal */}
+      <SaveConfirmationModal
+        isOpen={Boolean(saveConfirmation)}
+        onClose={() => setSaveConfirmation(null)}
+        data={saveConfirmation}
+      />
 
     </div>
   );

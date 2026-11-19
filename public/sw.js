@@ -1,15 +1,18 @@
-const CACHE_NAME = 'patel-spices-v1';
+const CACHE_NAME = 'patel-spices-v2';
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/icon.svg',
-  '/manifest.json'
+  './',
+  './index.html',
+  './logo.jpg',
+  './icon.svg',
+  './manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
+      return cache.addAll(STATIC_ASSETS).catch(err => {
+        console.warn('PWA static cache pre-fetch warning:', err);
+      });
     })
   );
   self.skipWaiting();
@@ -36,15 +39,19 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // If request is to an external API (like Google Apps Script or external scripts), bypass cache
-  if (url.origin !== location.origin) {
+  // If request is to Firestore, Firebase Auth, or external APIs, bypass service worker cache
+  if (
+    url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('firebaseio.com') ||
+    url.hostname.includes('cloudfunctions.net')
+  ) {
     return;
   }
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
-        // Return cache but update in background (stale-while-revalidate for local assets)
+        // Return cache immediately and refresh in background
         fetch(event.request).then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             caches.open(CACHE_NAME).then((cache) => {
@@ -52,13 +59,13 @@ self.addEventListener('fetch', (event) => {
             });
           }
         }).catch(() => {
-          // offline, ignore background fetch error
+          // offline, ignore background error
         });
         return cachedResponse;
       }
 
       return fetch(event.request).then((networkResponse) => {
-        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+        if (!networkResponse || networkResponse.status !== 200) {
           return networkResponse;
         }
         const responseToCache = networkResponse.clone();
@@ -67,9 +74,9 @@ self.addEventListener('fetch', (event) => {
         });
         return networkResponse;
       }).catch(() => {
-        // Fallback to root index if navigation
+        // Fallback for navigation requests when offline
         if (event.request.mode === 'navigate') {
-          return caches.match('/');
+          return caches.match('./index.html') || caches.match('./') || caches.match('/');
         }
       });
     })

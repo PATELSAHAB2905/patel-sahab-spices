@@ -25,6 +25,7 @@ import {
   calculateFifoAllocation
 } from '../services/inventoryEngine';
 import { queueSyncRecord } from '../services/syncService';
+import SaveConfirmationModal from './SaveConfirmationModal';
 
 const AVAILABLE_PACK_SIZES = [10, 24, 50, 100, 200, 500];
 
@@ -34,6 +35,7 @@ export default function OrderSaleModule({ activeEmployee, onOpenEmployeeModal })
   const [history, setHistory] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedOrders, setExpandedOrders] = useState({});
+  const [saveConfirmation, setSaveConfirmation] = useState(null);
 
   // Order Header Form
   const [orderDate, setOrderDate] = useState(getTodayDateStr());
@@ -385,10 +387,19 @@ export default function OrderSaleModule({ activeEmployee, onOpenEmployeeModal })
       }
       await tx.done;
 
-      // Queue for Google Sheets Sync
+      // Queue for Firebase Sync
       for (const rec of allRecordsToSave) {
         await queueSyncRecord('ORDER_SALE', rec);
       }
+
+      setSaveConfirmation({
+        entryId: orderId,
+        date: orderDate,
+        productName: lineItems.map(li => li.productName).filter(Boolean).join(', '),
+        quantity: `${totalOrderKg} KG`,
+        batchId: 'Multi-Batch (FIFO)',
+        moduleName: 'Order / Sale Dispatch'
+      });
 
       setSuccessMsg(
         `Order ${orderId} saved successfully! Dispatched ${totalOrderKg} KG across ${allRecordsToSave.length} allocation entries.`
@@ -684,11 +695,12 @@ export default function OrderSaleModule({ activeEmployee, onOpenEmployeeModal })
                           type="number"
                           step="0.001"
                           min="0.001"
+                          inputMode="decimal"
                           required
                           placeholder="e.g. 10.5"
                           value={line.kgSold}
                           onChange={(e) => handleUpdateLine(line.id, 'kgSold', e.target.value)}
-                          className="w-full bg-white border-2 border-emerald-400 text-emerald-950 font-black rounded-lg px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-emerald-600"
+                          className="w-full bg-white border-2 border-emerald-400 text-emerald-950 font-black rounded-lg px-2.5 py-1.5 text-base sm:text-sm focus:ring-2 focus:ring-emerald-600"
                         />
                         <span className="absolute right-2.5 top-2 text-xs font-bold text-slate-400">
                           KG
@@ -886,6 +898,13 @@ export default function OrderSaleModule({ activeEmployee, onOpenEmployeeModal })
         </div>
 
       </div>
+
+      {/* Save Confirmation Modal */}
+      <SaveConfirmationModal
+        isOpen={Boolean(saveConfirmation)}
+        onClose={() => setSaveConfirmation(null)}
+        data={saveConfirmation}
+      />
 
     </div>
   );

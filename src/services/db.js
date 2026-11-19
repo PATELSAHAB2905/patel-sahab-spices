@@ -85,12 +85,62 @@ export async function seedInitialDataIfNeeded() {
 
   // Check employees
   const employeeCount = await db.count('employees');
+  // Default password "123456" with PSS_EMP_SALT_2026
+  const defaultPwHash = '42b3b8be488e1de91358c3d761c82cd9115732c5f636df7a6efcf41953bc2377';
   if (employeeCount === 0) {
     const defaultEmployees = [
-      { id: 'EMP-001', name: 'Ramesh Patel', role: 'Production Supervisor', active: true, createdAt: new Date().toISOString() },
-      { id: 'EMP-002', name: 'Suresh Kumar', role: 'Machine Operator', active: true, createdAt: new Date().toISOString() },
-      { id: 'EMP-003', name: 'Dinesh Sharma', role: 'Packaging Incharge', active: true, createdAt: new Date().toISOString() },
-      { id: 'EMP-004', name: 'Mukesh Verma', role: 'Godown Incharge', active: true, createdAt: new Date().toISOString() }
+      { 
+        id: 'EMP-001', 
+        employee_id: 'PSS001', 
+        name: 'Ramesh Patel', 
+        role: 'Production Supervisor', 
+        department: 'Production', 
+        designation: 'Production Supervisor', 
+        mobile: '9826012345', 
+        password_hash: defaultPwHash, 
+        permitted_modules: ['raw_material', 'processing', 'packaging', 'order_sale'], 
+        active: true, 
+        createdAt: new Date().toISOString() 
+      },
+      { 
+        id: 'EMP-002', 
+        employee_id: 'PSS002', 
+        name: 'Suresh Kumar', 
+        role: 'Machine Operator', 
+        department: 'Grinding', 
+        designation: 'Machine Operator', 
+        mobile: '9826012346', 
+        password_hash: defaultPwHash, 
+        permitted_modules: ['processing'], 
+        active: true, 
+        createdAt: new Date().toISOString() 
+      },
+      { 
+        id: 'EMP-003', 
+        employee_id: 'PSS003', 
+        name: 'Dinesh Sharma', 
+        role: 'Packaging Incharge', 
+        department: 'Packaging', 
+        designation: 'Packaging Incharge', 
+        mobile: '9826012347', 
+        password_hash: defaultPwHash, 
+        permitted_modules: ['packaging'], 
+        active: true, 
+        createdAt: new Date().toISOString() 
+      },
+      { 
+        id: 'EMP-004', 
+        employee_id: 'PSS004', 
+        name: 'Mukesh Verma', 
+        role: 'Godown Incharge', 
+        department: 'Warehouse', 
+        designation: 'Godown Incharge', 
+        mobile: '9826012348', 
+        password_hash: defaultPwHash, 
+        permitted_modules: ['raw_material', 'order_sale'], 
+        active: true, 
+        createdAt: new Date().toISOString() 
+      }
     ];
     const tx = db.transaction('employees', 'readwrite');
     for (const emp of defaultEmployees) {

@@ -36,7 +36,13 @@ import {
   WifiOff
 } from 'lucide-react';
 import { getDB } from '../services/db';
-import { updateAdminPin } from '../services/adminAuth';
+import { 
+  updateAdminPin, 
+  createEmployeeAccount, 
+  resetEmployeePassword, 
+  getNextEmployeeId, 
+  ensureEmployeesMigrated 
+} from '../services/adminAuth';
 import { getSyncOverview, triggerSync } from '../services/syncService';
 import { 
   generateEntryId, 
@@ -71,12 +77,19 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
   // Employees Management State
   const [employees, setEmployees] = useState([]);
   const [newEmployeeName, setNewEmployeeName] = useState('');
-  const [newEmployeeRole, setNewEmployeeRole] = useState('Production Supervisor');
+  const [newEmployeeId, setNewEmployeeId] = useState('');
+  const [newEmployeeMobile, setNewEmployeeMobile] = useState('');
+  const [newEmployeeDept, setNewEmployeeDept] = useState('Production');
+  const [newEmployeeRole, setNewEmployeeRole] = useState('Machine Operator');
+  const [newEmployeePassword, setNewEmployeePassword] = useState('123456');
   const [newEmployeeModules, setNewEmployeeModules] = useState(['raw_material', 'processing', 'packaging', 'order_sale']);
-  const [editingEmpId, setEditingEmpId] = useState(null);
-  const [editEmpName, setEditEmpName] = useState('');
-  const [editEmpRole, setEditEmpRole] = useState('');
-  const [editEmpModules, setEditEmpModules] = useState([]);
+  
+  // Password Reset Modal State
+  const [resetTargetEmp, setResetTargetEmp] = useState(null);
+  const [resetNewPassword, setResetNewPassword] = useState('');
+
+  // Edit Employee Modal State
+  const [editingEmp, setEditingEmp] = useState(null);
 
   // Products Management State
   const [products, setProducts] = useState([]);
@@ -117,16 +130,20 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
   const loadAllAdminData = async () => {
     try {
       const db = await getDB();
-      const [emps, prods, limits, sync] = await Promise.all([
-        db.getAll('employees'),
+      const [emps, prods, limits, sync, nextId] = await Promise.all([
+        ensureEmployeesMigrated(),
         db.getAll('products'),
         db.get('settings', 'low_stock_limits'),
-        getSyncOverview()
+        getSyncOverview(),
+        getNextEmployeeId()
       ]);
 
       setEmployees(emps);
       setProducts(prods);
       setSyncState(sync);
+      if (!newEmployeeId) {
+        setNewEmployeeId(nextId);
+      }
       if (limits?.value) {
         setLowStockLimits(limits.value);
       }
@@ -161,21 +178,26 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
   // 1. Employees Management
   const handleAddEmployee = async (e) => {
     e.preventDefault();
-    if (!newEmployeeName.trim()) return;
+    if (!newEmployeeName.trim()) {
+      showMsg('error', 'Employee name is required.');
+      return;
+    }
     try {
-      const db = await getDB();
-      const id = `EMP-${Date.now().toString().slice(-4)}`;
-      const emp = {
-        id,
+      await createEmployeeAccount({
         name: newEmployeeName.trim(),
-        role: newEmployeeRole.trim(),
-        permitted_modules: newEmployeeModules,
-        active: true,
-        createdAt: new Date().toISOString()
-      };
-      await db.put('employees', emp);
+        employee_id: newEmployeeId.trim() || undefined,
+        mobile: newEmployeeMobile.trim(),
+        department: newEmployeeDept.trim(),
+        designation: newEmployeeRole.trim(),
+        password: newEmployeePassword.trim() || '123456',
+        permitted_modules: newEmployeeModules
+      });
       setNewEmployeeName('');
-      showMsg('success', `Employee ${emp.name} added successfully.`);
+      setNewEmployeeMobile('');
+      setNewEmployeePassword('123456');
+      showMsg('success', `Employee ${newEmployeeName.trim()} created successfully.`);
+      const nextId = await getNextEmployeeId();
+      setNewEmployeeId(nextId);
       await loadAllAdminData();
     } catch (err) {
       showMsg('error', err.message);
@@ -186,24 +208,48 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
     try {
       const db = await getDB();
       emp.active = !emp.active;
+      emp.updatedAt = new Date().toISOString();
       await db.put('employees', emp);
-      showMsg('success', `${emp.name} status updated.`);
+      showMsg('success', `${emp.name} is now ${emp.active ? 'Active' : 'Deactivated'}.`);
       await loadAllAdminData();
     } catch (err) {
       showMsg('error', err.message);
     }
   };
 
-  const handleSaveEditEmployee = async (empId) => {
+  const handleResetPasswordSubmit = async (e) => {
+    e.preventDefault();
+    if (!resetTargetEmp || !resetNewPassword || resetNewPassword.trim().length < 4) {
+      showMsg('error', 'New password must be at least 4 characters.');
+      return;
+    }
+    try {
+      await resetEmployeePassword(resetTargetEmp.id, resetNewPassword.trim());
+      showMsg('success', `Password for ${resetTargetEmp.name} (${resetTargetEmp.employee_id || resetTargetEmp.id}) updated successfully.`);
+      setResetTargetEmp(null);
+      setResetNewPassword('');
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', err.message);
+    }
+  };
+
+  const handleSaveEditEmployee = async (e) => {
+    e.preventDefault();
+    if (!editingEmp) return;
     try {
       const db = await getDB();
-      const emp = await db.get('employees', empId);
+      const emp = await db.get('employees', editingEmp.id);
       if (emp) {
-        emp.name = editEmpName.trim();
-        emp.role = editEmpRole.trim();
-        emp.permitted_modules = editEmpModules;
+        emp.name = editingEmp.name.trim();
+        emp.mobile = (editingEmp.mobile || '').trim();
+        emp.department = (editingEmp.department || 'Production').trim();
+        emp.designation = (editingEmp.designation || editingEmp.role || 'Staff').trim();
+        emp.role = emp.designation;
+        emp.permitted_modules = editingEmp.permitted_modules || [];
+        emp.updatedAt = new Date().toISOString();
         await db.put('employees', emp);
-        setEditingEmpId(null);
+        setEditingEmp(null);
         showMsg('success', 'Employee updated successfully.');
         await loadAllAdminData();
       }
@@ -473,8 +519,8 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
         
         {/* Brand Header */}
         <div className="p-4 border-b border-slate-800 flex items-center space-x-3">
-          <div className="w-10 h-10 rounded-xl bg-gold-400/20 text-gold-300 flex items-center justify-center border border-gold-400/40">
-            <ShieldCheck className="w-6 h-6" />
+          <div className="w-11 h-11 rounded-2xl bg-white p-1 flex items-center justify-center border border-red-200 shrink-0 shadow-md">
+            <img src="/logo.jpg" alt="Patel Sahab Spices" className="w-full h-full object-contain rounded-xl" />
           </div>
           <div>
             <h1 className="text-sm font-black tracking-wider text-white uppercase">
@@ -482,6 +528,9 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
             </h1>
             <p className="text-[10px] text-slate-400 tracking-wider font-semibold">
               Admin Control Center
+            </p>
+            <p className="text-[9px] text-gold-300 font-medium">
+              "सर्वे भवन्तु सुखिनः"
             </p>
           </div>
         </div>
@@ -551,6 +600,9 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
           >
             {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
+          <div className="w-8 h-8 rounded-xl bg-white p-0.5 flex items-center justify-center border border-red-200 shrink-0">
+            <img src="/logo.jpg" alt="Logo" className="w-full h-full object-contain rounded-lg" />
+          </div>
           <div>
             <h1 className="text-xs font-black uppercase tracking-wider text-white">
               PATEL SAHAB SPICES
@@ -827,87 +879,514 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
         {/* 8. EMPLOYEES MANAGEMENT */}
         {activeTab === 'EMPLOYEES' && (
           <div className="space-y-5 animate-fadeIn">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-              <h3 className="text-base font-black text-slate-900 uppercase">Employee Management & Role Permissions</h3>
+            <div className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-5">
+              
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-2">
+                <div>
+                  <h3 className="text-base font-black text-slate-900 uppercase">
+                    Factory Employee Credentials & Permission Management
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Create unique Employee IDs (PSS001, PSS002...), assign passwords, and control module permissions
+                  </p>
+                </div>
+                <span className="text-xs font-bold bg-brand-50 text-brand-900 border border-brand-200 px-3 py-1 rounded-full self-start sm:self-auto">
+                  {employees.length} Configured Employees
+                </span>
+              </div>
               
               {/* Add Employee Form */}
-              <form onSubmit={handleAddEmployee} className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Employee Full Name</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Rahul Patidar"
-                    value={newEmployeeName}
-                    onChange={(e) => setNewEmployeeName(e.target.value)}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold"
-                    required
-                  />
+              <form onSubmit={handleAddEmployee} className="p-4 sm:p-5 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
+                <h4 className="text-xs font-black text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-brand-800" />
+                  <span>Register New Factory Employee</span>
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
+                  {/* Name */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Full Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Rahul Patidar"
+                      value={newEmployeeName}
+                      onChange={(e) => setNewEmployeeName(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                      required
+                    />
+                  </div>
+
+                  {/* Assigned Employee ID */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Employee ID <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. PSS005"
+                      value={newEmployeeId}
+                      onChange={(e) => setNewEmployeeId(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-mono font-bold text-brand-900"
+                      required
+                    />
+                  </div>
+
+                  {/* Mobile Number */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Mobile Number
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. 9826012345"
+                      value={newEmployeeMobile}
+                      onChange={(e) => setNewEmployeeMobile(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                    />
+                  </div>
+
+                  {/* Department */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Department
+                    </label>
+                    <select
+                      value={newEmployeeDept}
+                      onChange={(e) => setNewEmployeeDept(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                    >
+                      <option value="Production">Production</option>
+                      <option value="Grinding">Grinding / Processing</option>
+                      <option value="Packaging">Packaging</option>
+                      <option value="Warehouse">Warehouse / Godown</option>
+                      <option value="Quality">Quality Control</option>
+                      <option value="Dispatch">Dispatch & Sales</option>
+                    </select>
+                  </div>
+
+                  {/* Designation */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Role / Designation
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Machine Operator"
+                      value={newEmployeeRole}
+                      onChange={(e) => setNewEmployeeRole(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                      required
+                    />
+                  </div>
+
+                  {/* Initial Password */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Initial Password <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Min 4 characters"
+                      value={newEmployeePassword}
+                      onChange={(e) => setNewEmployeePassword(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900"
+                      required
+                    />
+                    <span className="text-[10px] text-slate-500 block mt-0.5">Default: 123456</span>
+                  </div>
                 </div>
+
+                {/* Module Permissions Checkboxes */}
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Role / Designation</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Machine Operator"
-                    value={newEmployeeRole}
-                    onChange={(e) => setNewEmployeeRole(e.target.value)}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold"
-                    required
-                  />
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-2">
+                    Authorized Workstation Modules:
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {[
+                      { id: 'raw_material', label: '1. Raw Material Inward' },
+                      { id: 'processing', label: '2. Processing & Grinding' },
+                      { id: 'packaging', label: '3. Packaging' },
+                      { id: 'order_sale', label: '4. Order / Sale' },
+                    ].map(mod => {
+                      const isChecked = newEmployeeModules.includes(mod.id);
+                      return (
+                        <label 
+                          key={mod.id} 
+                          className={`flex items-center space-x-2 p-2.5 rounded-xl border cursor-pointer transition text-xs font-bold ${
+                            isChecked ? 'bg-brand-50 border-brand-300 text-brand-900' : 'bg-white border-slate-200 text-slate-600'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setNewEmployeeModules(prev => [...prev, mod.id]);
+                              } else {
+                                setNewEmployeeModules(prev => prev.filter(m => m !== mod.id));
+                              }
+                            }}
+                            className="rounded text-brand-800 focus:ring-brand-500"
+                          />
+                          <span>{mod.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="flex items-end">
+
+                <div className="flex justify-end pt-1">
                   <button
                     type="submit"
-                    className="w-full py-2.5 bg-brand-900 hover:bg-brand-800 text-white rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5"
+                    className="px-5 py-2.5 bg-brand-900 hover:bg-brand-800 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow-sm active:scale-95"
                   >
                     <Plus className="w-4 h-4" />
-                    <span>Add Employee</span>
+                    <span>Create Employee Account</span>
                   </button>
                 </div>
               </form>
 
-              {/* Employees List */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[10px]">
-                      <th className="py-2.5 px-3">Emp ID</th>
-                      <th className="py-2.5 px-3">Name</th>
-                      <th className="py-2.5 px-3">Role</th>
-                      <th className="py-2.5 px-3">Permitted Modules</th>
-                      <th className="py-2.5 px-3 text-center">Status</th>
-                      <th className="py-2.5 px-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
-                    {employees.map(emp => (
-                      <tr key={emp.id} className="hover:bg-slate-50/80">
-                        <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{emp.id}</td>
-                        <td className="py-2.5 px-3 font-bold text-slate-900">{emp.name}</td>
-                        <td className="py-2.5 px-3">{emp.role}</td>
-                        <td className="py-2.5 px-3">
-                          <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-600 font-mono">
-                            {Array.isArray(emp.permitted_modules) ? emp.permitted_modules.join(', ') : 'All Modules'}
+              {/* Employees List (Desktop Table + Mobile Cards) */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-black text-slate-900 uppercase tracking-wider">
+                  Configured Active & Inactive Accounts ({employees.length})
+                </h4>
+
+                {/* Mobile Cards (sm:hidden) */}
+                <div className="sm:hidden space-y-3">
+                  {employees.map(emp => (
+                    <div 
+                      key={emp.id}
+                      className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-mono font-black text-brand-900 text-xs bg-white px-2 py-0.5 rounded border border-slate-200">
+                            {emp.employee_id || emp.id}
                           </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${emp.active ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
-                            {emp.active ? 'Active' : 'Disabled'}
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            emp.active ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                          }`}>
+                            {emp.active ? 'Active' : 'Inactive'}
                           </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right space-x-2">
-                          <button
-                            onClick={() => handleToggleEmployeeActive(emp)}
-                            className="text-xs text-brand-700 hover:underline"
-                          >
-                            {emp.active ? 'Deactivate' : 'Activate'}
-                          </button>
-                        </td>
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-semibold">{emp.department || 'Production'}</span>
+                      </div>
+
+                      <div>
+                        <h5 className="font-extrabold text-sm text-slate-900">{emp.name}</h5>
+                        <p className="text-xs text-slate-600 mt-0.5 font-medium">
+                          {emp.designation || emp.role} • 📱 {emp.mobile || 'No Mobile'}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1">
+                        {(emp.permitted_modules || ['raw_material', 'processing', 'packaging', 'order_sale']).map(m => (
+                          <span key={m} className="text-[9px] bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-700 font-bold uppercase">
+                            {m.replace('_', ' ')}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-200 text-xs font-bold">
+                        <button
+                          onClick={() => { setResetTargetEmp(emp); setResetNewPassword(''); }}
+                          className="text-amber-800 hover:text-amber-900 flex items-center gap-1"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" />
+                          <span>Reset Password</span>
+                        </button>
+                        <button
+                          onClick={() => setEditingEmp({ ...emp })}
+                          className="text-blue-700 hover:text-blue-800 flex items-center gap-1"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          onClick={() => handleToggleEmployeeActive(emp)}
+                          className={emp.active ? 'text-red-700' : 'text-emerald-700'}
+                        >
+                          {emp.active ? 'Deactivate' : 'Activate'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Desktop Table (hidden sm:block) */}
+                <div className="hidden sm:block overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[10px]">
+                        <th className="py-3 px-3">Emp ID</th>
+                        <th className="py-3 px-3">Name</th>
+                        <th className="py-3 px-3">Mobile</th>
+                        <th className="py-3 px-3">Dept & Role</th>
+                        <th className="py-3 px-3">Permitted Modules</th>
+                        <th className="py-3 px-3 text-center">Status</th>
+                        <th className="py-3 px-3 text-right">Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
+                      {employees.map(emp => (
+                        <tr key={emp.id} className="hover:bg-slate-50/80">
+                          <td className="py-3 px-3 font-mono font-bold text-brand-900">
+                            {emp.employee_id || emp.id}
+                          </td>
+                          <td className="py-3 px-3 font-bold text-slate-900">{emp.name}</td>
+                          <td className="py-3 px-3 font-mono text-slate-600">{emp.mobile || 'N/A'}</td>
+                          <td className="py-3 px-3">
+                            <span className="font-bold text-slate-800 block">{emp.designation || emp.role}</span>
+                            <span className="text-[10px] text-slate-500">{emp.department || 'Production'}</span>
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="flex flex-wrap gap-1 max-w-xs">
+                              {(emp.permitted_modules || ['raw_material', 'processing', 'packaging', 'order_sale']).map(m => (
+                                <span key={m} className="text-[9px] bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded font-bold uppercase">
+                                  {m.replace('_', ' ')}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${
+                              emp.active ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {emp.active ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right space-x-2">
+                            <button
+                              onClick={() => { setResetTargetEmp(emp); setResetNewPassword(''); }}
+                              className="px-2 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition inline-flex items-center gap-1"
+                              title="Reset Password"
+                            >
+                              <KeyRound className="w-3 h-3" />
+                              <span>Reset PW</span>
+                            </button>
+                            <button
+                              onClick={() => setEditingEmp({ ...emp })}
+                              className="px-2 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-bold hover:bg-blue-100 transition inline-flex items-center gap-1"
+                              title="Edit Details"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              onClick={() => handleToggleEmployeeActive(emp)}
+                              className={`px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
+                                emp.active 
+                                  ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                            >
+                              {emp.active ? 'Deactivate' : 'Activate'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
               </div>
+
             </div>
+
+            {/* RESET PASSWORD MODAL */}
+            {resetTargetEmp && (
+              <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+                <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <div className="flex items-center space-x-2 text-brand-900 font-black">
+                      <KeyRound className="w-5 h-5 text-amber-600" />
+                      <h4 className="text-sm uppercase">Reset Employee Password</h4>
+                    </div>
+                    <button onClick={() => setResetTargetEmp(null)} className="text-slate-400 hover:text-slate-700">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1 text-xs">
+                    <p className="text-slate-600">Employee: <strong>{resetTargetEmp.name}</strong></p>
+                    <p className="text-slate-600 font-mono">Employee ID: <strong>{resetTargetEmp.employee_id || resetTargetEmp.id}</strong></p>
+                  </div>
+
+                  <form onSubmit={handleResetPasswordSubmit} className="space-y-3.5">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                        New Password (Min 4 chars) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        autoFocus
+                        placeholder="e.g. 123456 or Pass@123"
+                        value={resetNewPassword}
+                        onChange={(e) => setResetNewPassword(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900"
+                      />
+                    </div>
+
+                    <div className="flex items-center space-x-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setResetTargetEmp(null)}
+                        className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 bg-brand-900 hover:bg-brand-800 text-white font-black rounded-xl text-xs uppercase tracking-wider"
+                      >
+                        Save Password
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* EDIT EMPLOYEE MODAL */}
+            {editingEmp && (
+              <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+                <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <div className="flex items-center space-x-2 text-brand-900 font-black">
+                      <Edit3 className="w-5 h-5 text-blue-600" />
+                      <h4 className="text-sm uppercase">Edit Employee Details</h4>
+                    </div>
+                    <button onClick={() => setEditingEmp(null)} className="text-slate-400 hover:text-slate-700">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleSaveEditEmployee} className="space-y-3.5">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                        Employee ID (Read-only)
+                      </label>
+                      <input
+                        type="text"
+                        disabled
+                        value={editingEmp.employee_id || editingEmp.id}
+                        className="w-full px-3 py-2 bg-slate-100 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-600"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                        Full Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={editingEmp.name}
+                        onChange={(e) => setEditingEmp({ ...editingEmp, name: e.target.value })}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                          Mobile
+                        </label>
+                        <input
+                          type="tel"
+                          value={editingEmp.mobile || ''}
+                          onChange={(e) => setEditingEmp({ ...editingEmp, mobile: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                          Department
+                        </label>
+                        <select
+                          value={editingEmp.department || 'Production'}
+                          onChange={(e) => setEditingEmp({ ...editingEmp, department: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                        >
+                          <option value="Production">Production</option>
+                          <option value="Grinding">Grinding / Processing</option>
+                          <option value="Packaging">Packaging</option>
+                          <option value="Warehouse">Warehouse / Godown</option>
+                          <option value="Quality">Quality Control</option>
+                          <option value="Dispatch">Dispatch & Sales</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                        Role / Designation
+                      </label>
+                      <input
+                        type="text"
+                        value={editingEmp.designation || editingEmp.role || ''}
+                        onChange={(e) => setEditingEmp({ ...editingEmp, designation: e.target.value, role: e.target.value })}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-2">
+                        Permitted Modules
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { id: 'raw_material', label: 'Raw Inward' },
+                          { id: 'processing', label: 'Processing' },
+                          { id: 'packaging', label: 'Packaging' },
+                          { id: 'order_sale', label: 'Order / Sale' },
+                        ].map(mod => {
+                          const currentMods = editingEmp.permitted_modules || [];
+                          const isChecked = currentMods.includes(mod.id);
+                          return (
+                            <label key={mod.id} className="flex items-center space-x-2 text-xs font-bold p-2 bg-slate-50 border rounded-xl">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setEditingEmp({ ...editingEmp, permitted_modules: [...currentMods, mod.id] });
+                                  } else {
+                                    setEditingEmp({ ...editingEmp, permitted_modules: currentMods.filter(m => m !== mod.id) });
+                                  }
+                                }}
+                              />
+                              <span>{mod.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingEmp(null)}
+                        className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 bg-brand-900 hover:bg-brand-800 text-white font-black rounded-xl text-xs uppercase tracking-wider"
+                      >
+                        Save Changes
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
           </div>
         )}
 
