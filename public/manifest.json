@@ -1,0 +1,18 @@
+{
+  "short_name": "Patel Spices",
+  "name": "Patel Sahab Spices - Production & Inventory",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512 any",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#991B1B",
+  "theme_color": "#991B1B",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/"
+}
