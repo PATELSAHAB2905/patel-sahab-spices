@@ -1,18 +1,25 @@
 {
   "short_name": "Patel Spices",
-  "name": "Patel Sahab Spices - Production & Inventory",
+  "name": "PATEL SAHAB SPICES",
+  "description": "Patel Sahab Spices - Factory Production & Inventory Management System",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "logo.jpg",
+      "type": "image/jpeg",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon.svg",
       "type": "image/svg+xml",
       "sizes": "192x192 512x512 any",
       "purpose": "any maskable"
     }
   ],
-  "start_url": "/",
-  "background_color": "#991B1B",
+  "start_url": "./",
+  "background_color": "#FFFFFF",
   "theme_color": "#991B1B",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "scope": "/"
+  "scope": "./"
 }
