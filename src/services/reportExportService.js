@@ -56,6 +56,8 @@ export async function fetchAllReportRecords() {
   let saleList = [];
   let prodList = [];
   let empList = [];
+  let returnList = [];
+  let recoveryList = [];
 
   try {
     const isConfigured = await isFirebaseConfigured();
@@ -65,13 +67,15 @@ export async function fetchAllReportRecords() {
         const db = initRes.db;
         const config = await getFirebaseConfig();
 
-        const [rawSnap, procSnap, pkgSnap, saleSnap, prodSnap, empSnap] = await Promise.all([
+        const [rawSnap, procSnap, pkgSnap, saleSnap, prodSnap, empSnap, retSnap, recSnap] = await Promise.all([
           getDocs(collection(db, 'raw_material')),
           getDocs(collection(db, 'processing')),
           getDocs(collection(db, 'packaging')),
           getDocs(collection(db, 'order_sale')),
           getDocs(collection(db, 'products')),
           getDocs(collection(db, 'employees')),
+          getDocs(collection(db, 'sales_return')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'powder_recovery')).catch(() => ({ docs: [] })),
         ]);
 
         rawList = rawSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
@@ -80,6 +84,8 @@ export async function fetchAllReportRecords() {
         saleList = saleSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
         prodList = prodSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
         empList = empSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
+        returnList = retSnap.docs ? retSnap.docs.map(d => ({ ...d.data(), docId: d.id })) : [];
+        recoveryList = recSnap.docs ? recSnap.docs.map(d => ({ ...d.data(), docId: d.id })) : [];
 
         isFromFirebase = true;
         sourceName = `Firebase Cloud Firestore (${config.projectId})`;
@@ -92,13 +98,15 @@ export async function fetchAllReportRecords() {
   // Fallback to local IndexedDB
   if (!isFromFirebase || (rawList.length === 0 && procList.length === 0 && pkgList.length === 0 && saleList.length === 0)) {
     const localDb = await getDB();
-    const [r, p, k, s, pr, e] = await Promise.all([
+    const [r, p, k, s, pr, e, ret, rec] = await Promise.all([
       localDb.getAll('raw_material'),
       localDb.getAll('processing'),
       localDb.getAll('packaging'),
       localDb.getAll('order_sale'),
       localDb.getAll('products'),
-      localDb.getAll('employees')
+      localDb.getAll('employees'),
+      localDb.objectStoreNames.contains('sales_return') ? localDb.getAll('sales_return') : Promise.resolve([]),
+      localDb.objectStoreNames.contains('powder_recovery') ? localDb.getAll('powder_recovery') : Promise.resolve([])
     ]);
 
     rawList = r;
@@ -107,10 +115,21 @@ export async function fetchAllReportRecords() {
     saleList = s;
     prodList = pr;
     empList = e;
+    returnList = ret || [];
+    recoveryList = rec || [];
     if (!isFromFirebase) {
       sourceName = 'Local Database (Offline / Synced)';
     }
   }
+
+  // Filter out reversed records
+  const isActive = (r) => !r.is_reversed && r.status !== 'REVERSED';
+  rawList = rawList.filter(isActive);
+  procList = procList.filter(isActive);
+  pkgList = pkgList.filter(isActive);
+  saleList = saleList.filter(isActive);
+  returnList = returnList.filter(isActive);
+  recoveryList = recoveryList.filter(isActive);
 
   return {
     isFromFirebase,
@@ -120,7 +139,9 @@ export async function fetchAllReportRecords() {
     pkgList,
     saleList,
     prodList,
-    empList
+    empList,
+    returnList,
+    recoveryList
   };
 }
 

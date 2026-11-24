@@ -190,7 +190,7 @@ export async function testFirebaseConnection(customConfig = null) {
 /**
  * Map table name to Firestore collection
  */
-function getCollectionName(tableName) {
+export function getCollectionName(tableName) {
   const map = {
     'RAW_MATERIAL': 'raw_material',
     'PROCESSING': 'processing',
@@ -202,7 +202,10 @@ function getCollectionName(tableName) {
     'order_sale': 'order_sale',
     'products': 'products',
     'employees': 'employees',
-    'audit_logs': 'audit_logs'
+    'audit_logs': 'audit_logs',
+    'sales_return': 'sales_return',
+    'powder_recovery': 'powder_recovery',
+    'system_errors': 'system_errors'
   };
   return map[tableName] || tableName.toLowerCase();
 }
@@ -216,7 +219,7 @@ export async function syncRecordToFirestore(tableName, record) {
 
   const db = initRes.db;
   const collectionName = getCollectionName(tableName);
-  const docId = String(record.entry_id || record.id || record.order_id || `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+  const docId = String(record.return_id || record.recovery_id || record.error_id || record.entry_id || record.id || record.order_id || `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
 
   const docRef = doc(db, collectionName, docId);
   await setDoc(docRef, {
@@ -225,6 +228,42 @@ export async function syncRecordToFirestore(tableName, record) {
   }, { merge: true });
 
   return { success: true, docId, collection: collectionName };
+}
+
+/**
+ * Sync an array of records to Firestore using writeBatch chunks (Fast Bulk Sync)
+ * @param {Array<{ table: string, data: Object }>} items
+ */
+export async function syncBatchToFirestore(items) {
+  if (!items || items.length === 0) return { success: true, count: 0 };
+  const initRes = await initFirebase();
+  if (!initRes.initialized) throw new Error(initRes.error || 'Firebase not configured');
+
+  const db = initRes.db;
+  const chunkSize = 400; // Firestore max is 500 per batch
+  let totalCommitted = 0;
+
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const batch = writeBatch(db);
+
+    for (const item of chunk) {
+      const colName = getCollectionName(item.table);
+      const rec = item.data;
+      const docId = String(rec.return_id || rec.recovery_id || rec.error_id || rec.entry_id || rec.id || rec.order_id || `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+      const ref = doc(db, colName, docId);
+      batch.set(ref, {
+        ...rec,
+        _synced_at: serverTimestamp(),
+        _cloud_synced_at: new Date().toISOString()
+      }, { merge: true });
+    }
+
+    await batch.commit();
+    totalCommitted += chunk.length;
+  }
+
+  return { success: true, count: totalCommitted };
 }
 
 /**
@@ -244,6 +283,8 @@ export async function syncAllLocalDataToFirestore(onProgress = null) {
     { name: 'processing', store: 'processing', idField: 'entry_id' },
     { name: 'packaging', store: 'packaging', idField: 'entry_id' },
     { name: 'order_sale', store: 'order_sale', idField: 'entry_id' },
+    { name: 'sales_return', store: 'sales_return', idField: 'return_id' },
+    { name: 'powder_recovery', store: 'powder_recovery', idField: 'recovery_id' },
     { name: 'products', store: 'products', idField: 'id' },
     { name: 'employees', store: 'employees', idField: 'id' }
   ];
@@ -252,6 +293,7 @@ export async function syncAllLocalDataToFirestore(onProgress = null) {
   const results = {};
 
   for (const col of collectionsToSync) {
+    if (!localDb.objectStoreNames.contains(col.store)) continue;
     const items = await localDb.getAll(col.store);
     results[col.name] = items.length;
 
@@ -314,6 +356,8 @@ export async function pullDataFromFirestore(onProgress = null) {
     { name: 'processing', store: 'processing' },
     { name: 'packaging', store: 'packaging' },
     { name: 'order_sale', store: 'order_sale' },
+    { name: 'sales_return', store: 'sales_return' },
+    { name: 'powder_recovery', store: 'powder_recovery' },
     { name: 'products', store: 'products' },
     { name: 'employees', store: 'employees' }
   ];
@@ -322,26 +366,31 @@ export async function pullDataFromFirestore(onProgress = null) {
   const results = {};
 
   for (const col of collectionsToPull) {
-    const colRef = collection(db, col.name);
-    const snap = await getDocs(colRef);
-    results[col.name] = snap.size;
+    if (!localDb.objectStoreNames.contains(col.store)) continue;
+    try {
+      const colRef = collection(db, col.name);
+      const snap = await getDocs(colRef);
+      results[col.name] = snap.size;
 
-    const tx = localDb.transaction(col.store, 'readwrite');
-    snap.forEach(docSnap => {
-      const data = docSnap.data();
-      delete data._synced_at;
-      delete data._cloud_synced_at;
-      tx.store.put(data);
-      totalDownloaded++;
-    });
-    await tx.done;
-
-    if (onProgress) {
-      onProgress({
-        collection: col.name,
-        downloaded: snap.size,
-        totalDownloaded
+      const tx = localDb.transaction(col.store, 'readwrite');
+      snap.forEach(docSnap => {
+        const data = docSnap.data();
+        delete data._synced_at;
+        delete data._cloud_synced_at;
+        tx.store.put(data);
+        totalDownloaded++;
       });
+      await tx.done;
+
+      if (onProgress) {
+        onProgress({
+          collection: col.name,
+          downloaded: snap.size,
+          totalDownloaded
+        });
+      }
+    } catch (colErr) {
+      console.warn(`Could not pull collection ${col.name}:`, colErr);
     }
   }
 
@@ -373,16 +422,26 @@ export function formatIndianInt(val) {
   return new Intl.NumberFormat('en-IN').format(num);
 }
 
+let dashboardCache = null;
+let lastDashboardFetchTime = 0;
+const CACHE_TTL_MS = 15000; // 15s in-memory cache to prevent repetitive Firestore over-querying
+
 /**
  * Fetch Live Factory Stock Overview from Firebase Firestore (with local IndexedDB fallback)
  */
-export async function fetchFirebaseDashboardData() {
+export async function fetchFirebaseDashboardData(forceRefresh = false) {
+  if (!forceRefresh && dashboardCache && (Date.now() - lastDashboardFetchTime < CACHE_TTL_MS)) {
+    return dashboardCache;
+  }
+
   let isFromFirebase = false;
   let dataSource = 'Local Database (Offline / Synced)';
   let rawList = [];
   let procList = [];
   let pkgList = [];
   let saleList = [];
+  let returnList = [];
+  let recoveryList = [];
   let prodList = [];
   let errorMsg = null;
   let projectId = null;
@@ -399,12 +458,14 @@ export async function fetchFirebaseDashboardData() {
         const config = await getFirebaseConfig();
         projectId = config?.projectId || null;
 
-        const [rawSnap, procSnap, pkgSnap, saleSnap, prodSnap] = await Promise.all([
+        const [rawSnap, procSnap, pkgSnap, saleSnap, prodSnap, retSnap, recSnap] = await Promise.all([
           getDocs(collection(db, 'raw_material')),
           getDocs(collection(db, 'processing')),
           getDocs(collection(db, 'packaging')),
           getDocs(collection(db, 'order_sale')),
           getDocs(collection(db, 'products')),
+          getDocs(collection(db, 'sales_return')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'powder_recovery')).catch(() => ({ docs: [] })),
         ]);
 
         rawList = rawSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
@@ -412,6 +473,8 @@ export async function fetchFirebaseDashboardData() {
         pkgList = pkgSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
         saleList = saleSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
         prodList = prodSnap.docs.map(d => ({ ...d.data(), docId: d.id }));
+        returnList = retSnap.docs ? retSnap.docs.map(d => ({ ...d.data(), docId: d.id })) : [];
+        recoveryList = recSnap.docs ? recSnap.docs.map(d => ({ ...d.data(), docId: d.id })) : [];
 
         isFromFirebase = true;
         dataSource = `Firebase Cloud Firestore (${projectId})`;
@@ -426,21 +489,25 @@ export async function fetchFirebaseDashboardData() {
   if (!isFromFirebase || (rawList.length === 0 && procList.length === 0 && pkgList.length === 0 && saleList.length === 0)) {
     try {
       const localDb = await getDB();
-      const [r, p, k, s, pr] = await Promise.all([
+      const [r, p, k, s, pr, ret, rec] = await Promise.all([
         localDb.getAll('raw_material'),
         localDb.getAll('processing'),
         localDb.getAll('packaging'),
         localDb.getAll('order_sale'),
-        localDb.getAll('products')
+        localDb.getAll('products'),
+        localDb.objectStoreNames.contains('sales_return') ? localDb.getAll('sales_return') : Promise.resolve([]),
+        localDb.objectStoreNames.contains('powder_recovery') ? localDb.getAll('powder_recovery') : Promise.resolve([])
       ]);
 
       // If local database has records, use them
-      if (r.length > 0 || p.length > 0 || k.length > 0 || s.length > 0) {
+      if (r.length > 0 || p.length > 0 || k.length > 0 || s.length > 0 || ret.length > 0) {
         rawList = r;
         procList = p;
         pkgList = k;
         saleList = s;
         prodList = pr;
+        returnList = ret || [];
+        recoveryList = rec || [];
         dataSource = isFromFirebase ? `Firebase Firestore (Synced via Local Cache)` : 'Local Database (Offline / Synced)';
       }
     } catch (localErr) {
@@ -449,7 +516,16 @@ export async function fetchFirebaseDashboardData() {
     }
   }
 
-  // 3. Build Batch to Product Name Map for infallible product association
+  // 3. Filter out reversed records across all datasets
+  const isActive = (rec) => !rec.is_reversed && rec.status !== 'REVERSED';
+  rawList = rawList.filter(isActive);
+  procList = procList.filter(isActive);
+  pkgList = pkgList.filter(isActive);
+  saleList = saleList.filter(isActive);
+  returnList = returnList.filter(isActive);
+  recoveryList = recoveryList.filter(isActive);
+
+  // 4. Build Batch to Product Name Map for infallible product association
   const batchProductMap = {};
   rawList.forEach(r => {
     if (r.batch_id && r.material_name) {
@@ -457,7 +533,7 @@ export async function fetchFirebaseDashboardData() {
     }
   });
 
-  // 4. Products list (Priority: Haldi, Mirchi, Dhaniya, plus custom active products)
+  // 5. Products list (Priority: Haldi, Mirchi, Dhaniya, plus custom active products)
   const defaultStandardProducts = ['Haldi', 'Mirchi', 'Dhaniya'];
   const customProducts = prodList
     .filter(p => p.active !== false && !defaultStandardProducts.some(dp => dp.toLowerCase() === (p.name || '').toLowerCase()))
@@ -481,13 +557,23 @@ export async function fetchFirebaseDashboardData() {
   // Standard pack sizes in GM
   const PACK_SIZES = [10, 24, 50, 100, 200, 500];
 
-  // 5. Calculate Product-Wise Metrics
+  // 6. Calculate Product-Wise Metrics
   const productsSummary = allProductNames.map(productName => {
     // A. Raw Material calculations
     const prodRawEntries = rawList.filter(r => isMatchProduct(r.material_name, productName, r.batch_id));
     const prodProcEntries = procList.filter(p => isMatchProduct(p.material_name, productName, p.batch_id));
     const prodPkgEntries = pkgList.filter(k => isMatchProduct(k.product_name, productName, k.batch_id));
     const prodSaleEntries = saleList.filter(s => isMatchProduct(s.product_name, productName, s.batch_id));
+    const prodReturnEntries = returnList.filter(r => isMatchProduct(r.product_name, productName, r.batch_id));
+    const prodRecoveryEntries = recoveryList.filter(rec => isMatchProduct(rec.product_name, productName, rec.batch_id));
+
+    // Also include any actual recovery recorded on return records
+    const completedReturnRecoveriesKg = prodReturnEntries
+      .filter(ret => ret.status === 'RECOVERY_COMPLETED' && !ret.recovery_id)
+      .reduce((sum, ret) => sum + (Number(ret.actual_recovered_powder_kg) || 0), 0);
+    const directRecoveriesKg = prodRecoveryEntries
+      .reduce((sum, rec) => sum + (Number(rec.actual_recovered_powder_kg) || 0), 0);
+    const totalActualRecoveredPowderKg = Number((completedReturnRecoveriesKg + directRecoveriesKg).toFixed(3));
 
     // Total raw inward
     const totalRawInwardKg = prodRawEntries.reduce((acc, r) => acc + (Number(r.quantity_kg) || 0), 0);
@@ -515,14 +601,14 @@ export async function fetchFirebaseDashboardData() {
       return acc + (Number(k.powder_used_kg) || Number(k.quantity_kg) || ((Number(k.packet_quantity) * Number(k.pack_size_gm)) / 1000) || 0);
     }, 0);
 
-    // Available powder balance for packaging
-    const availablePowderKg = Math.max(0, Number((powderProducedKg - powderUsedInPackagingKg).toFixed(3)));
+    // Available powder balance for packaging = Produced + Actual Recovered Powder - Used in Packaging
+    const availablePowderKg = Math.max(0, Number((powderProducedKg + totalActualRecoveredPowderKg - powderUsedInPackagingKg).toFixed(3)));
 
     // C. Finished Product Stock (PACKETS & KG)
-    // Calculate for each pack size
     const packSizeStock = PACK_SIZES.map(size => {
       const sizePkg = prodPkgEntries.filter(k => Number(k.pack_size_gm) === size);
       const sizeSales = prodSaleEntries.filter(s => Number(s.pack_size_gm) === size);
+      const sizeReturns = prodReturnEntries.filter(r => Number(r.pack_size_gm) === size);
 
       // Packets produced
       const producedPackets = sizePkg.reduce((acc, k) => {
@@ -542,7 +628,12 @@ export async function fetchFirebaseDashboardData() {
         return acc + Math.round((kg * 1000) / size);
       }, 0);
 
-      const remainingPackets = Math.max(0, producedPackets - soldPackets);
+      // Reusable packets returned to available finished stock
+      const reusablePackets = sizeReturns.reduce((acc, r) => acc + (Number(r.reusable_packets) || 0), 0);
+      const rejectedPackets = sizeReturns.reduce((acc, r) => acc + (Number(r.rejected_packets) || 0), 0);
+
+      // Finished Stock = Produced - Sold + Reusable Returned Packets
+      const remainingPackets = Math.max(0, producedPackets - soldPackets + reusablePackets);
       const remainingKg = Number(((remainingPackets * size) / 1000).toFixed(3));
       const soldKg = Number(((soldPackets * size) / 1000).toFixed(3));
 
@@ -550,6 +641,8 @@ export async function fetchFirebaseDashboardData() {
         packSizeGm: size,
         producedPackets,
         soldPackets,
+        reusablePackets,
+        rejectedPackets,
         remainingPackets,
         remainingKg,
         soldKg
@@ -571,6 +664,7 @@ export async function fetchFirebaseDashboardData() {
       netCleanedRawKg: Number(netCleanedRawKg.toFixed(3)),
       cleaningWasteKg: Number(cleaningWasteKg.toFixed(3)),
       powderProducedKg: Number(powderProducedKg.toFixed(3)),
+      actualRecoveredPowderKg: totalActualRecoveredPowderKg,
       grindingLossKg: Number(grindingLossKg.toFixed(3)),
       totalLossKg: Number(totalLossKg.toFixed(3)),
       yieldPercentage,
@@ -582,27 +676,32 @@ export async function fetchFirebaseDashboardData() {
       totalFinishedStockKg: Number(totalFinishedStockKg.toFixed(3)),
       // Sales
       totalKgSold: Number(totalKgSold.toFixed(3)),
+      // Returns
+      totalReturnsCount: prodReturnEntries.length,
       // Entry counts
       entryCounts: {
         raw: prodRawEntries.length,
         processing: prodProcEntries.length,
         packaging: prodPkgEntries.length,
         sales: prodSaleEntries.length,
+        returns: prodReturnEntries.length
       }
     };
   });
 
-  // 6. Overall Factory Totals
+  // 7. Overall Factory Totals
   const overall = {
     totalRawInwardKg: productsSummary.reduce((acc, p) => acc + p.totalRawInwardKg, 0),
     totalRawIssuedProcessingKg: productsSummary.reduce((acc, p) => acc + p.totalRawIssuedForProcessingKg, 0),
     totalAvailableRawMaterialKg: productsSummary.reduce((acc, p) => acc + p.availableRawMaterialKg, 0),
     totalPowderProducedKg: productsSummary.reduce((acc, p) => acc + p.powderProducedKg, 0),
+    totalActualRecoveredPowderKg: productsSummary.reduce((acc, p) => acc + (p.actualRecoveredPowderKg || 0), 0),
     totalPowderUsedPackagingKg: productsSummary.reduce((acc, p) => acc + p.powderUsedInPackagingKg, 0),
     totalAvailablePowderKg: productsSummary.reduce((acc, p) => acc + p.availablePowderKg, 0),
     totalFinishedPackets: productsSummary.reduce((acc, p) => acc + p.totalFinishedPackets, 0),
     totalFinishedStockKg: productsSummary.reduce((acc, p) => acc + p.totalFinishedStockKg, 0),
     totalSoldKg: productsSummary.reduce((acc, p) => acc + p.totalKgSold, 0),
+    totalReturnsCount: returnList.length,
     // Today's Activity
     todayRawInwardKg: rawList
       .filter(r => (r.date || '').slice(0, 10) === todayStr || (r.timestamp || '').slice(0, 10) === todayStr)
@@ -616,10 +715,10 @@ export async function fetchFirebaseDashboardData() {
     todaySalesKg: saleList
       .filter(s => (s.date || '').slice(0, 10) === todayStr || (s.timestamp || '').slice(0, 10) === todayStr)
       .reduce((acc, s) => acc + (Number(s.kg_sold) || 0), 0),
-    totalEntriesCount: rawList.length + procList.length + pkgList.length + saleList.length
+    totalEntriesCount: rawList.length + procList.length + pkgList.length + saleList.length + returnList.length
   };
 
-  // 7. Recent Transactions Feed (Latest 8 items across all modules)
+  // 8. Recent Transactions Feed (Latest 8 items across all modules)
   const taggedRaw = rawList.map(r => ({
     id: r.entry_id,
     module: 'RAW INWARD',
@@ -667,11 +766,22 @@ export async function fetchFirebaseDashboardData() {
     staff: s.employee_name || 'Staff'
   }));
 
-  const recentTransactions = [...taggedRaw, ...taggedProc, ...taggedPkg, ...taggedSales]
+  const taggedReturns = returnList.map(ret => ({
+    id: ret.return_id,
+    module: 'SALES RETURN',
+    date: ret.date || ret.timestamp?.slice(0, 10),
+    timestamp: ret.timestamp || ret.date,
+    product: ret.product_name,
+    batch: ret.batch_id,
+    quantity: `${ret.returned_packets || 0} pkts (${ret.pack_size_gm} GM)`,
+    staff: ret.received_by || ret.employee_name || 'Staff'
+  }));
+
+  const recentTransactions = [...taggedRaw, ...taggedProc, ...taggedPkg, ...taggedSales, ...taggedReturns]
     .sort((a, b) => new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date))
     .slice(0, 8);
 
-  return {
+  const result = {
     isFromFirebase,
     dataSource,
     projectId,
@@ -681,4 +791,9 @@ export async function fetchFirebaseDashboardData() {
     recentTransactions,
     error: errorMsg
   };
+
+  dashboardCache = result;
+  lastDashboardFetchTime = Date.now();
+
+  return result;
 }

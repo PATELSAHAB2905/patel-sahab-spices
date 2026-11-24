@@ -33,7 +33,8 @@ import {
   Search,
   Sparkles,
   Wifi,
-  WifiOff
+  WifiOff,
+  Activity
 } from 'lucide-react';
 import { getDB } from '../services/db';
 import { 
@@ -41,7 +42,9 @@ import {
   createEmployeeAccount, 
   resetEmployeePassword, 
   getNextEmployeeId, 
-  ensureEmployeesMigrated 
+  ensureEmployeesMigrated,
+  changeEmployeeId,
+  deleteEmployeeAccount
 } from '../services/adminAuth';
 import { getSyncOverview, triggerSync } from '../services/syncService';
 import { 
@@ -50,6 +53,11 @@ import {
   generatePackagingTxId, 
   getTodayDateStr 
 } from '../services/inventoryEngine';
+import { 
+  getSystemErrors, 
+  resolveSystemError, 
+  getSystemHealthSummary 
+} from '../services/errorLogger';
 import { 
   getCurrentFinancialYearRange, 
   formatDisplayDate, 
@@ -64,6 +72,7 @@ import ProcessingModule from './ProcessingModule';
 import PackagingModule from './PackagingModule';
 import OrderSaleModule from './OrderSaleModule';
 import EntryHistory from './EntryHistory';
+import SalesReturnModule from './SalesReturnModule';
 
 export default function AdminPortal({ onLogout, activeEmployee }) {
   const [activeTab, setActiveTab] = useState('DASHBOARD');
@@ -120,11 +129,33 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
   const [exportingExcel, setExportingExcel] = useState(false);
   const [activeDatePreset, setActiveDatePreset] = useState('CURRENT_FY');
 
+  // System Health & Error Logs State
+  const [systemErrors, setSystemErrors] = useState([]);
+  const [systemHealth, setSystemHealth] = useState(null);
+  const [errorFilterSeverity, setErrorFilterSeverity] = useState('ALL');
+  const [errorFilterModule, setErrorFilterModule] = useState('ALL');
+  const [resolveTargetError, setResolveTargetError] = useState(null);
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [resolvingError, setResolvingError] = useState(false);
+
   const adminEmployee = activeEmployee || { name: 'Business Owner (Admin)', role: 'Administrator' };
 
   const showMsg = (type, text) => {
     setFeedback({ type, text });
     setTimeout(() => setFeedback(null), 5000);
+  };
+
+  const loadSystemHealthAndErrors = async () => {
+    try {
+      const [errors, health] = await Promise.all([
+        getSystemErrors(),
+        getSystemHealthSummary()
+      ]);
+      setSystemErrors(errors);
+      setSystemHealth(health);
+    } catch (err) {
+      console.warn('System health load error:', err);
+    }
   };
 
   const loadAllAdminData = async () => {
@@ -147,6 +178,8 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
       if (limits?.value) {
         setLowStockLimits(limits.value);
       }
+
+      await loadSystemHealthAndErrors();
 
       if (activeTab === 'REVERSALS') {
         await loadAuditModuleEntries(selectedAuditModule);
@@ -241,6 +274,13 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
       const db = await getDB();
       const emp = await db.get('employees', editingEmp.id);
       if (emp) {
+        // Check if Employee ID changed
+        const currentEmpId = (emp.employee_id || emp.id || '').toUpperCase();
+        const targetEmpId = (editingEmp.employee_id || '').trim().toUpperCase();
+        if (targetEmpId && targetEmpId !== currentEmpId) {
+          await changeEmployeeId(emp.id, targetEmpId, 'Admin');
+        }
+
         emp.name = editingEmp.name.trim();
         emp.mobile = (editingEmp.mobile || '').trim();
         emp.department = (editingEmp.department || 'Production').trim();
@@ -250,11 +290,41 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
         emp.updatedAt = new Date().toISOString();
         await db.put('employees', emp);
         setEditingEmp(null);
-        showMsg('success', 'Employee updated successfully.');
+        showMsg('success', `Employee details updated successfully.`);
         await loadAllAdminData();
       }
     } catch (err) {
       showMsg('error', err.message);
+    }
+  };
+
+  const handleDeleteEmployee = async (emp) => {
+    if (!window.confirm(`Permanently delete employee account for ${emp.name} (${emp.employee_id || emp.id})?`)) {
+      return;
+    }
+    try {
+      const res = await deleteEmployeeAccount(emp.id, 'Admin');
+      showMsg('success', res.message);
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', err.message);
+    }
+  };
+
+  const handleResolveErrorSubmit = async (e) => {
+    e.preventDefault();
+    if (!resolveTargetError) return;
+    setResolvingError(true);
+    try {
+      await resolveSystemError(resolveTargetError.error_id, resolutionNotes.trim(), 'Admin');
+      showMsg('success', `Error ${resolveTargetError.error_id} marked as RESOLVED.`);
+      setResolveTargetError(null);
+      setResolutionNotes('');
+      await loadSystemHealthAndErrors();
+    } catch (err) {
+      showMsg('error', err.message);
+    } finally {
+      setResolvingError(false);
     }
   };
 
@@ -484,7 +554,7 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
     await loadReportPreview(f, t);
   };
 
-  // Navigation Items (Exact 13 items)
+  // Navigation Items
   const NAV_ITEMS = [
     { id: 'DASHBOARD', label: 'Home Dashboard', icon: Home },
     { id: 'STOCK', label: 'Stock Overview', icon: Layers },
@@ -492,10 +562,12 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
     { id: 'PROC', label: 'Processing', icon: Cog },
     { id: 'PKG', label: 'Packaging', icon: Boxes },
     { id: 'SALE', label: 'Order / Sale', icon: ShoppingBag },
+    { id: 'SALES_RETURN', label: 'Sales Return & Recovery', icon: RotateCcw, highlight: true },
     { id: 'REPORTS_EXPORT', label: 'Reports & Export', icon: FileSpreadsheet, highlight: true },
     { id: 'EMPLOYEES', label: 'Employees', icon: Users },
     { id: 'PRODUCTS', label: 'Products & Prefixes', icon: Package },
     { id: 'HISTORY', label: 'Entry History', icon: History },
+    { id: 'SYSTEM_HEALTH', label: 'System Health & Errors', icon: AlertTriangle },
     { id: 'REVERSALS', label: 'Reversals & Audit', icon: RotateCcw },
     { id: 'SETTINGS', label: 'Settings & Security', icon: Settings },
     { id: 'LOGOUT', label: 'Logout', icon: LogOut, isLogout: true }
@@ -725,6 +797,17 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
         {/* 6. ORDER / SALE */}
         {activeTab === 'SALE' && (
           <OrderSaleModule activeEmployee={adminEmployee} />
+        )}
+
+        {/* 7. SALES RETURN & POWDER RECOVERY */}
+        {activeTab === 'SALES_RETURN' && (
+          <div className="space-y-5 animate-fadeIn">
+            <SalesReturnModule 
+              currentEmployee={{ name: 'Plant Admin', employee_id: 'ADMIN' }} 
+              onComplete={loadAllAdminData} 
+              userRole="admin" 
+            />
+          </div>
         )}
 
         {/* 7. REPORTS & EXPORT (8 SHEETS EXCEL GENERATOR) */}
@@ -1107,9 +1190,17 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
                         </button>
                         <button
                           onClick={() => handleToggleEmployeeActive(emp)}
-                          className={emp.active ? 'text-red-700' : 'text-emerald-700'}
+                          className={emp.active ? 'text-amber-700' : 'text-emerald-700'}
                         >
                           {emp.active ? 'Deactivate' : 'Activate'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEmployee(emp)}
+                          className="text-red-700 hover:text-red-800 flex items-center gap-0.5"
+                          title="Safe Delete Check"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete</span>
                         </button>
                       </div>
                     </div>
@@ -1158,7 +1249,7 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
                               {emp.active ? 'Active' : 'Inactive'}
                             </span>
                           </td>
-                          <td className="py-3 px-3 text-right space-x-2">
+                          <td className="py-3 px-3 text-right space-x-1.5">
                             <button
                               onClick={() => { setResetTargetEmp(emp); setResetNewPassword(''); }}
                               className="px-2 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition inline-flex items-center gap-1"
@@ -1179,11 +1270,19 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
                               onClick={() => handleToggleEmployeeActive(emp)}
                               className={`px-2 py-1 rounded-lg text-[11px] font-bold border transition ${
                                 emp.active 
-                                  ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' 
+                                  ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' 
                                   : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                               }`}
                             >
                               {emp.active ? 'Deactivate' : 'Activate'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteEmployee(emp)}
+                              className="px-2 py-1 bg-red-50 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold hover:bg-red-100 transition inline-flex items-center gap-1"
+                              title="Safe Delete Check"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete</span>
                             </button>
                           </td>
                         </tr>
@@ -1268,14 +1367,16 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
                   <form onSubmit={handleSaveEditEmployee} className="space-y-3.5">
                     <div>
                       <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                        Employee ID (Read-only)
+                        Employee ID (Unique ID) <span className="text-red-500">*</span>
                       </label>
                       <input
                         type="text"
-                        disabled
+                        required
                         value={editingEmp.employee_id || editingEmp.id}
-                        className="w-full px-3 py-2 bg-slate-100 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-600"
+                        onChange={(e) => setEditingEmp({ ...editingEmp, employee_id: e.target.value.toUpperCase() })}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono font-bold text-brand-900 uppercase"
                       />
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Enforces system uniqueness check.</span>
                     </div>
 
                     <div>
@@ -1344,6 +1445,7 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
                           { id: 'processing', label: 'Processing' },
                           { id: 'packaging', label: 'Packaging' },
                           { id: 'order_sale', label: 'Order / Sale' },
+                          { id: 'sales_return', label: 'Sales Return' },
                         ].map(mod => {
                           const currentMods = editingEmp.permitted_modules || [];
                           const isChecked = currentMods.includes(mod.id);
@@ -1470,7 +1572,171 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
 
         {/* 10. ENTRY HISTORY */}
         {activeTab === 'HISTORY' && (
-          <EntryHistory />
+          <EntryHistory onDataChanged={loadAllAdminData} />
+        )}
+
+        {/* 11. SYSTEM HEALTH & ERROR LOGS */}
+        {activeTab === 'SYSTEM_HEALTH' && (
+          <div className="space-y-5 animate-fadeIn">
+            {/* Health KPI Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5">
+              <div className="bg-white rounded-3xl border border-slate-200 p-4 shadow-xs">
+                <p className="text-[11px] font-bold text-slate-500 uppercase">Database Status</p>
+                <p className="text-xl font-black text-emerald-700 mt-1 flex items-center space-x-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span>{systemHealth?.database_status || 'HEALTHY'}</span>
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">IndexedDB v2 + Cloud Firestore</p>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-200 p-4 shadow-xs">
+                <p className="text-[11px] font-bold text-slate-500 uppercase">Cloud Sync Status</p>
+                <p className={`text-xl font-black mt-1 ${syncState.isOnline ? 'text-emerald-700' : 'text-red-700'}`}>
+                  {syncState.statusText}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  {syncState.lastSyncTime ? `Last: ${new Date(syncState.lastSyncTime).toLocaleTimeString()}` : 'Real-time synchronization'}
+                </p>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-200 p-4 shadow-xs">
+                <p className="text-[11px] font-bold text-slate-500 uppercase">Pending Sync Queue</p>
+                <p className="text-xl font-black text-slate-900 mt-1 font-mono">
+                  {syncState.pendingCount} <span className="text-xs text-slate-500 font-normal">records</span>
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Auto-syncs on reconnection</p>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-200 p-4 shadow-xs">
+                <p className="text-[11px] font-bold text-slate-500 uppercase">System Error Logs</p>
+                <p className="text-xl font-black mt-1">
+                  <span className="text-red-600">{systemHealth?.open_errors || 0} Open</span>
+                  <span className="text-xs text-slate-400 font-normal ml-2">/ {systemHealth?.resolved_errors || 0} Resolved</span>
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Auto-logged across factory operations</p>
+              </div>
+            </div>
+
+            {/* Error Log Viewer */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-2">
+                <div>
+                  <h3 className="text-base font-black text-slate-900 uppercase">Logged System Errors & Diagnostics</h3>
+                  <p className="text-xs text-slate-500">Track and resolve system events, sync errors, and calculation diagnostics</p>
+                </div>
+                <button
+                  onClick={loadSystemHealthAndErrors}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 self-start sm:self-auto"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refresh Logs</span>
+                </button>
+              </div>
+
+              {/* Filter toolbar */}
+              <div className="flex flex-wrap gap-2 text-xs">
+                <select
+                  value={errorFilterSeverity}
+                  onChange={(e) => setErrorFilterSeverity(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-700"
+                >
+                  <option value="ALL">All Severities</option>
+                  <option value="CRITICAL">Critical Only</option>
+                  <option value="HIGH">High Severity</option>
+                  <option value="MEDIUM">Medium Severity</option>
+                  <option value="LOW">Low Severity</option>
+                </select>
+
+                <select
+                  value={errorFilterModule}
+                  onChange={(e) => setErrorFilterModule(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-700"
+                >
+                  <option value="ALL">All Modules</option>
+                  <option value="SYNC">Firebase Sync</option>
+                  <option value="DATABASE">Database</option>
+                  <option value="STOCK">Stock Calculation</option>
+                  <option value="AUTH">Authentication</option>
+                  <option value="REVERSAL">Reversal</option>
+                  <option value="RETURN">Sales Return</option>
+                </select>
+              </div>
+
+              {/* Error records table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px] tracking-wider">
+                      <th className="py-2.5 px-3">Error ID</th>
+                      <th className="py-2.5 px-3">Timestamp</th>
+                      <th className="py-2.5 px-3">Module</th>
+                      <th className="py-2.5 px-3">Description</th>
+                      <th className="py-2.5 px-3 text-center">Severity</th>
+                      <th className="py-2.5 px-3 text-center">Status</th>
+                      <th className="py-2.5 px-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {systemErrors
+                      .filter(e => {
+                        if (errorFilterSeverity !== 'ALL' && e.severity !== errorFilterSeverity) return false;
+                        if (errorFilterModule !== 'ALL' && e.module !== errorFilterModule) return false;
+                        return true;
+                      })
+                      .map(errItem => (
+                        <tr key={errItem.error_id} className="hover:bg-slate-50/70">
+                          <td className="py-2.5 px-3 font-mono font-bold text-brand-900">{errItem.error_id}</td>
+                          <td className="py-2.5 px-3 text-slate-500 whitespace-nowrap">
+                            {new Date(errItem.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          </td>
+                          <td className="py-2.5 px-3 font-bold text-slate-800">{errItem.module}</td>
+                          <td className="py-2.5 px-3 text-slate-700 max-w-xs truncate" title={errItem.description}>
+                            {errItem.description}
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                              errItem.severity === 'CRITICAL' || errItem.severity === 'HIGH'
+                                ? 'bg-red-100 text-red-800'
+                                : errItem.severity === 'MEDIUM'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-blue-100 text-blue-800'
+                            }`}>
+                              {errItem.severity}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              errItem.status === 'RESOLVED' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {errItem.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            {errItem.status !== 'RESOLVED' ? (
+                              <button
+                                onClick={() => { setResolveTargetError(errItem); setResolutionNotes(''); }}
+                                className="px-2.5 py-1 bg-brand-900 hover:bg-brand-800 text-white rounded-lg text-[10px] font-bold"
+                              >
+                                Resolve
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-400">Resolved</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    {systemErrors.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-400">
+                          No system errors logged. All factory systems operating normally.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* 11. REVERSALS & AUDIT */}
@@ -1707,6 +1973,79 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
               )}
             </div>
 
+          </div>
+        )}
+
+        {/* Resolve System Error Modal */}
+        {resolveTargetError && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 animate-scaleUp">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center space-x-2">
+                  <Activity className="w-5 h-5 text-brand-900" />
+                  <h3 className="text-sm font-black text-slate-900 uppercase">
+                    Resolve System Incident #{resolveTargetError.error_id}
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setResolveTargetError(null)}
+                  className="text-slate-400 hover:text-slate-700 text-sm font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="bg-slate-50 rounded-xl p-3 text-xs space-y-1.5 border border-slate-200">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-bold">Module:</span>
+                  <span className="font-mono font-bold text-slate-800">{resolveTargetError.module}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-bold">Severity:</span>
+                  <span className="font-bold text-red-600">{resolveTargetError.severity}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block mb-0.5">Error Message:</span>
+                  <p className="font-mono text-slate-800 bg-white p-2 rounded-lg border border-slate-200">
+                    {resolveTargetError.message}
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleResolveErrorSubmit} className="space-y-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                    Resolution Notes & Corrective Actions <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    required
+                    value={resolutionNotes}
+                    onChange={(e) => setResolutionNotes(e.target.value)}
+                    placeholder="Describe how this issue was resolved or investigated..."
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white"
+                  />
+                </div>
+
+                <div className="flex justify-end space-x-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setResolveTargetError(null)}
+                    className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={resolvingError}
+                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs flex items-center space-x-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{resolvingError ? 'Resolving...' : 'Confirm Resolution'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
 

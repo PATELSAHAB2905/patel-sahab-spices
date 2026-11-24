@@ -24,7 +24,8 @@ import {
   Building2,
   Phone,
   Tag,
-  Check
+  Check,
+  RotateCcw
 } from 'lucide-react';
 import { getDB } from '../services/db';
 import { getSyncOverview, triggerSync } from '../services/syncService';
@@ -32,6 +33,7 @@ import RawMaterialInward from './RawMaterialInward';
 import ProcessingModule from './ProcessingModule';
 import PackagingModule from './PackagingModule';
 import OrderSaleModule from './OrderSaleModule';
+import SalesReturnModule from './SalesReturnModule';
 
 function getKolkataDateStr() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -91,22 +93,24 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
   // Determine permitted modules
   const getPermittedModules = () => {
     if (activeEmployee?.permitted_modules && Array.isArray(activeEmployee.permitted_modules)) {
-      return activeEmployee.permitted_modules;
+      const perms = [...activeEmployee.permitted_modules];
+      if (!perms.includes('sales_return')) perms.push('sales_return');
+      return perms;
     }
     const role = (activeEmployee?.role || '').toLowerCase();
     if (role.includes('supervisor') || role.includes('manager')) {
-      return ['raw_material', 'processing', 'packaging', 'order_sale'];
+      return ['raw_material', 'processing', 'packaging', 'order_sale', 'sales_return'];
     }
     if (role.includes('machine') || role.includes('grinding') || role.includes('operator')) {
-      return ['processing'];
+      return ['processing', 'sales_return'];
     }
     if (role.includes('packaging')) {
-      return ['packaging'];
+      return ['packaging', 'sales_return'];
     }
     if (role.includes('godown') || role.includes('store') || role.includes('dispatch')) {
-      return ['raw_material', 'order_sale'];
+      return ['raw_material', 'order_sale', 'sales_return'];
     }
-    return ['raw_material', 'processing', 'packaging', 'order_sale'];
+    return ['raw_material', 'processing', 'packaging', 'order_sale', 'sales_return'];
   };
 
   const permitted = getPermittedModules();
@@ -117,11 +121,12 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
       const empName = activeEmployee?.name || '';
       const empId = activeEmployee?.employee_id || activeEmployee?.id || '';
 
-      const [raw, proc, pkg, sales, sync] = await Promise.all([
+      const [raw, proc, pkg, sales, returns, sync] = await Promise.all([
         db.getAll('raw_material'),
         db.getAll('processing'),
         db.getAll('packaging'),
         db.getAll('order_sale'),
+        db.objectStoreNames.contains('sales_return') ? db.getAll('sales_return') : Promise.resolve([]),
         getSyncOverview()
       ]);
 
@@ -177,7 +182,18 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
         synced: Boolean(s.synced)
       }));
 
-      const merged = [...myRaw, ...myProc, ...myPkg, ...mySales].sort(
+      const myReturns = (returns || []).filter(r => matchEmp(r.received_by || r.employee_name, r.employee_id)).map(r => ({
+        id: r.return_id,
+        module: 'Sales Return',
+        product: r.product_name,
+        batch: r.batch_id,
+        quantity: `${r.returned_packets} Pkts`,
+        date: r.date || r.timestamp?.slice(0, 10),
+        timestamp: r.timestamp || r.date,
+        synced: Boolean(r.synced)
+      }));
+
+      const merged = [...myRaw, ...myProc, ...myPkg, ...mySales, ...myReturns].sort(
         (a, b) => new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)
       );
 
@@ -350,6 +366,20 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
               >
                 <ShoppingBag className="w-3.5 h-3.5" />
                 <span>Order / Sale</span>
+              </button>
+            )}
+
+            {permitted.includes('sales_return') && (
+              <button
+                onClick={() => navigateTo('sales_return')}
+                className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-black transition ${
+                  activeTab === 'sales_return'
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Sales Return</span>
               </button>
             )}
 
@@ -568,6 +598,27 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                   </button>
                 )}
 
+                {/* 5. Sales Return / Old Stock Return */}
+                {permitted.includes('sales_return') && (
+                  <button
+                    onClick={() => navigateTo('sales_return')}
+                    className="p-4 bg-white hover:bg-rose-50/50 rounded-3xl border-2 border-rose-200 text-left transition shadow-xs group flex items-start justify-between active:scale-98 sm:col-span-2"
+                  >
+                    <div>
+                      <div className="w-11 h-11 rounded-2xl bg-rose-100 text-rose-800 flex items-center justify-center font-bold mb-2.5">
+                        <RotateCcw className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-sm font-black text-slate-900 group-hover:text-rose-800">
+                        5. Sales Return & Powder Recovery
+                      </h4>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        Return entries, reusable restock, rejected packet classification & spice powder recovery
+                      </p>
+                    </div>
+                    <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-rose-800 shrink-0 mt-2" />
+                  </button>
+                )}
+
               </div>
             </div>
 
@@ -683,6 +734,21 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
               </button>
             </div>
             <OrderSaleModule activeEmployee={activeEmployee} />
+          </div>
+        )}
+
+        {/* 6. SALES RETURN & POWDER RECOVERY */}
+        {activeTab === 'sales_return' && permitted.includes('sales_return') && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between sm:hidden pb-1">
+              <button 
+                onClick={() => navigateTo('HOME')}
+                className="text-xs font-bold text-brand-800 flex items-center gap-1"
+              >
+                ← Back to Home
+              </button>
+            </div>
+            <SalesReturnModule currentEmployee={activeEmployee} onComplete={loadEmployeeData} userRole="employee" />
           </div>
         )}
 
@@ -952,6 +1018,19 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                   <span className="flex items-center space-x-3 text-emerald-800">
                     <ShoppingBag className="w-5 h-5" />
                     <span>Order / Sale Dispatch (KG)</span>
+                  </span>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </button>
+              )}
+
+              {permitted.includes('sales_return') && (
+                <button
+                  onClick={() => navigateTo('sales_return')}
+                  className="w-full p-3 rounded-2xl hover:bg-rose-50 text-left flex items-center justify-between transition"
+                >
+                  <span className="flex items-center space-x-3 text-rose-800">
+                    <RotateCcw className="w-5 h-5" />
+                    <span>Sales Return & Powder Recovery</span>
                   </span>
                   <ChevronRight className="w-4 h-4 text-slate-400" />
                 </button>

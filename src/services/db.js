@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'PatelSahabSpicesDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export async function getDB() {
   return openDB(DB_NAME, DB_VERSION, {
@@ -74,6 +74,39 @@ export async function getDB() {
       // 9. Settings
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+
+      // 10. Sales Return / Old Stock Return
+      if (!db.objectStoreNames.contains('sales_return')) {
+        const store = db.createObjectStore('sales_return', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('return_id', 'return_id', { unique: true });
+        store.createIndex('order_id', 'order_id', { unique: false });
+        store.createIndex('batch_id', 'batch_id', { unique: false });
+        store.createIndex('product_name', 'product_name', { unique: false });
+        store.createIndex('date', 'date', { unique: false });
+        store.createIndex('status', 'status', { unique: false });
+        store.createIndex('synced', 'synced', { unique: false });
+      }
+
+      // 11. Powder Recovery
+      if (!db.objectStoreNames.contains('powder_recovery')) {
+        const store = db.createObjectStore('powder_recovery', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('recovery_id', 'recovery_id', { unique: true });
+        store.createIndex('return_id', 'return_id', { unique: false });
+        store.createIndex('batch_id', 'batch_id', { unique: false });
+        store.createIndex('product_name', 'product_name', { unique: false });
+        store.createIndex('date', 'date', { unique: false });
+        store.createIndex('synced', 'synced', { unique: false });
+      }
+
+      // 12. System Health & Error Logs
+      if (!db.objectStoreNames.contains('system_errors')) {
+        const store = db.createObjectStore('system_errors', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('error_id', 'error_id', { unique: true });
+        store.createIndex('timestamp', 'timestamp', { unique: false });
+        store.createIndex('module', 'module', { unique: false });
+        store.createIndex('severity', 'severity', { unique: false });
+        store.createIndex('status', 'status', { unique: false });
       }
     },
   });

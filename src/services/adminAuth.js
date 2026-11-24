@@ -421,3 +421,151 @@ export async function resetEmployeePassword(employeeDbId, newPassword) {
 
   return true;
 }
+
+/**
+ * Change / Update Employee ID (Admin only)
+ * Enforces uniqueness across all active and inactive employees.
+ */
+export async function changeEmployeeId(employeeDbId, newEmpId, adminName = 'Admin') {
+  if (!newEmpId || !newEmpId.trim()) {
+    throw new Error('New Employee ID cannot be blank.');
+  }
+
+  const cleanNewId = newEmpId.trim().toUpperCase();
+  const db = await getDB();
+  const emp = await db.get('employees', employeeDbId);
+  if (!emp) throw new Error('Employee record not found.');
+
+  const allEmployees = await db.getAll('employees');
+  const duplicate = allEmployees.find(e => 
+    e.id !== employeeDbId && 
+    (e.employee_id || '').toUpperCase() === cleanNewId
+  );
+
+  if (duplicate) {
+    throw new Error(`Employee ID "${cleanNewId}" is already assigned to ${duplicate.name}.`);
+  }
+
+  const oldEmpId = emp.employee_id || emp.id;
+  emp.employee_id = cleanNewId;
+  emp.updatedAt = new Date().toISOString();
+
+  await db.put('employees', emp);
+
+  // Audit log
+  try {
+    await db.add('audit_logs', {
+      timestamp: new Date().toISOString(),
+      module: 'EMPLOYEE_MANAGEMENT',
+      action: 'CHANGE_EMPLOYEE_ID',
+      performed_by: adminName,
+      target_id: employeeDbId,
+      details: `Employee ID changed from ${oldEmpId} to ${cleanNewId} for employee ${emp.name}`,
+      old_value: oldEmpId,
+      new_value: cleanNewId
+    });
+  } catch (auditErr) {
+    console.warn('Could not write audit log:', auditErr);
+  }
+
+  try {
+    await syncRecordToFirestore('employees', emp);
+  } catch (err) {
+    console.warn('Could not sync changed employee ID:', err);
+  }
+
+  return emp;
+}
+
+/**
+ * Toggle employee active / inactive status
+ */
+export async function toggleEmployeeStatus(employeeDbId, adminName = 'Admin') {
+  const db = await getDB();
+  const emp = await db.get('employees', employeeDbId);
+  if (!emp) throw new Error('Employee record not found.');
+
+  emp.active = !emp.active;
+  emp.updatedAt = new Date().toISOString();
+  await db.put('employees', emp);
+
+  try {
+    await db.add('audit_logs', {
+      timestamp: new Date().toISOString(),
+      module: 'EMPLOYEE_MANAGEMENT',
+      action: emp.active ? 'ACTIVATE_EMPLOYEE' : 'DEACTIVATE_EMPLOYEE',
+      performed_by: adminName,
+      target_id: employeeDbId,
+      details: `Employee ${emp.name} (${emp.employee_id || emp.id}) marked as ${emp.active ? 'ACTIVE' : 'INACTIVE'}`
+    });
+  } catch {}
+
+  try {
+    await syncRecordToFirestore('employees', emp);
+  } catch (err) {}
+
+  return emp;
+}
+
+/**
+ * Safe Employee Deletion Check
+ * Blocks deletion if the employee has created ANY historical inventory/production records.
+ */
+export async function deleteEmployeeAccount(employeeDbId, adminName = 'Admin') {
+  const db = await getDB();
+  const emp = await db.get('employees', employeeDbId);
+  if (!emp) throw new Error('Employee record not found.');
+
+  const empId = emp.employee_id || emp.id;
+  const empName = emp.name || '';
+
+  // Check matching in raw_material, processing, packaging, order_sale, sales_return
+  const matchesEmployee = (rec) => {
+    if (!rec) return false;
+    const recEmpId = rec.employee_id || '';
+    const recEmpName = rec.employee_name || rec.received_by || rec.processed_by || rec.packaged_by || rec.dispatched_by || '';
+    if (recEmpId && (recEmpId.toUpperCase() === empId.toUpperCase() || recEmpId === employeeDbId)) return true;
+    if (recEmpName && recEmpName.toLowerCase().trim() === empName.toLowerCase().trim()) return true;
+    return false;
+  };
+
+  const [raw, proc, pkg, sales, returns] = await Promise.all([
+    db.getAll('raw_material'),
+    db.getAll('processing'),
+    db.getAll('packaging'),
+    db.getAll('order_sale'),
+    db.objectStoreNames.contains('sales_return') ? db.getAll('sales_return') : Promise.resolve([])
+  ]);
+
+  const rawCount = raw.filter(matchesEmployee).length;
+  const procCount = proc.filter(matchesEmployee).length;
+  const pkgCount = pkg.filter(matchesEmployee).length;
+  const saleCount = sales.filter(matchesEmployee).length;
+  const returnCount = returns.filter(matchesEmployee).length;
+
+  const totalRecords = rawCount + procCount + pkgCount + saleCount + returnCount;
+
+  if (totalRecords > 0) {
+    const errorMsg = `This employee has created past production/inventory records (${totalRecords} record(s): ${rawCount} Raw Material, ${procCount} Processing, ${pkgCount} Packaging, ${saleCount} Sale, ${returnCount} Returns) and cannot be permanently deleted. Please DEACTIVATE the employee instead.`;
+    const err = new Error(errorMsg);
+    err.code = 'EMPLOYEE_HAS_RECORDS';
+    err.recordBreakdown = { rawCount, procCount, pkgCount, saleCount, returnCount };
+    throw err;
+  }
+
+  // Safe to delete
+  await db.delete('employees', employeeDbId);
+
+  try {
+    await db.add('audit_logs', {
+      timestamp: new Date().toISOString(),
+      module: 'EMPLOYEE_MANAGEMENT',
+      action: 'DELETE_EMPLOYEE',
+      performed_by: adminName,
+      target_id: employeeDbId,
+      details: `Safely deleted employee record for ${emp.name} (${empId}) - 0 historical records.`
+    });
+  } catch {}
+
+  return { success: true, message: `Employee ${emp.name} deleted successfully.` };
+}

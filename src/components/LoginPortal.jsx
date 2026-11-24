@@ -33,7 +33,6 @@ export default function LoginPortal({ onEmployeeLogin, onAdminLogin }) {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
   const [showForgotModal, setShowForgotModal] = useState(false);
-  const [showDemoHelp, setShowDemoHelp] = useState(false);
 
   const handleEmployeeSubmit = async (e) => {
     e.preventDefault();
@@ -247,64 +246,6 @@ export default function LoginPortal({ onEmployeeLogin, onAdminLogin }) {
                   Forgot Password / Contact Admin?
                 </button>
               </div>
-
-              {/* Demo Credentials Helper Pill */}
-              <div className="pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowDemoHelp(!showDemoHelp)}
-                  className="w-full py-1.5 px-3 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-[11px] font-bold text-amber-900 flex items-center justify-between transition"
-                >
-                  <span className="flex items-center space-x-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-amber-700" />
-                    <span>View Factory Employee IDs (Demo/Default)</span>
-                  </span>
-                  <span>{showDemoHelp ? '▲' : '▼'}</span>
-                </button>
-
-                {showDemoHelp && (
-                  <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] space-y-1 text-slate-700">
-                    <p className="font-bold text-slate-900 pb-1 border-b border-slate-200">
-                      Default Initial Password: <span className="font-mono text-brand-800 bg-white px-1.5 py-0.5 rounded border border-slate-300">123456</span>
-                    </p>
-                    <div className="grid grid-cols-2 gap-1.5 pt-1">
-                      <button 
-                        type="button" 
-                        onClick={() => { setEmployeeId('PSS001'); setPassword('123456'); }}
-                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
-                      >
-                        <div className="font-mono font-bold text-brand-800">PSS001</div>
-                        <div className="text-[10px] text-slate-500">Ramesh Patel (Supv)</div>
-                      </button>
-                      <button 
-                        type="button" 
-                        onClick={() => { setEmployeeId('PSS002'); setPassword('123456'); }}
-                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
-                      >
-                        <div className="font-mono font-bold text-brand-800">PSS002</div>
-                        <div className="text-[10px] text-slate-500">Suresh (Operator)</div>
-                      </button>
-                      <button 
-                        type="button" 
-                        onClick={() => { setEmployeeId('PSS003'); setPassword('123456'); }}
-                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
-                      >
-                        <div className="font-mono font-bold text-brand-800">PSS003</div>
-                        <div className="text-[10px] text-slate-500">Dinesh (Packaging)</div>
-                      </button>
-                      <button 
-                        type="button" 
-                        onClick={() => { setEmployeeId('PSS004'); setPassword('123456'); }}
-                        className="text-left p-1.5 bg-white border border-slate-200 rounded-lg hover:border-brand-500"
-                      >
-                        <div className="font-mono font-bold text-brand-800">PSS004</div>
-                        <div className="text-[10px] text-slate-500">Mukesh (Godown)</div>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
             </form>
           ) : (
             /* 2. ADMIN PIN UNLOCK FORM */
@@ -330,7 +271,7 @@ export default function LoginPortal({ onEmployeeLogin, onAdminLogin }) {
                 </div>
                 <div className="flex justify-between items-center text-[10px] text-slate-500 mt-1 pl-1">
                   <span>Authorized Personnel Only</span>
-                  <span>Default PIN: 1234</span>
+                  <span className="font-semibold text-slate-400">Factory Admin Access</span>
                 </div>
               </div>
 
@@ -403,7 +344,7 @@ export default function LoginPortal({ onEmployeeLogin, onAdminLogin }) {
               </div>
 
               <p className="text-[11px] text-slate-500 italic">
-                * Newly created employee accounts have the initial password set to <span className="font-mono font-bold text-slate-700">123456</span> unless modified by Admin.
+                * Please contact the Business Owner or Factory Incharge to obtain or reset your assigned workstation credentials.
               </p>
             </div>
 
