@@ -25,10 +25,19 @@ import {
   Phone,
   Tag,
   Check,
-  RotateCcw
+  RotateCcw,
+  Edit3,
+  Trash2,
+  Eye,
+  AlertTriangle
 } from 'lucide-react';
 import { getDB } from '../services/db';
 import { getSyncOverview, triggerSync } from '../services/syncService';
+import { 
+  editRawMaterialEntry, 
+  deleteRawMaterialEntry, 
+  validateRawMaterialDelete 
+} from '../services/inventoryEngine';
 import RawMaterialInward from './RawMaterialInward';
 import ProcessingModule from './ProcessingModule';
 import PackagingModule from './PackagingModule';
@@ -68,6 +77,112 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
       return null;
     }
   });
+
+  // Modal States for Employee Entries
+  const [detailEntry, setDetailEntry] = useState(null);
+  const [editEntry, setEditEntry] = useState(null);
+  const [editFormData, setEditFormData] = useState({});
+  const [editReason, setEditReason] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState(null);
+
+  const [deleteEntry, setDeleteEntry] = useState(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+  const [actionFeedback, setActionFeedback] = useState(null);
+
+  const handleOpenEditModal = (entry) => {
+    setEditEntry(entry);
+    setEditFormData({
+      date: entry.date,
+      batch_id: entry.batch,
+      material_name: entry.product,
+      quantity_kg: entry.quantity_kg || parseFloat(entry.quantity) || '',
+      supplier_name: entry.supplier_name || '',
+      invoice_number: entry.invoice_number || '',
+      remarks: entry.remarks || ''
+    });
+    setEditReason('');
+    setEditError(null);
+  };
+
+  const handleSaveEdit = async (e) => {
+    e.preventDefault();
+    if (!editEntry) return;
+    if (!editReason.trim()) {
+      setEditError('A reason for modifying this entry is mandatory.');
+      return;
+    }
+    setEditLoading(true);
+    setEditError(null);
+    try {
+      const currentUserName = activeEmployee?.name || 'Staff';
+      await editRawMaterialEntry(
+        editEntry.id,
+        {
+          date: editFormData.date,
+          batch_id: (editFormData.batch_id || '').trim().toUpperCase(),
+          material_name: editFormData.material_name,
+          supplier_name: editFormData.supplier_name.trim(),
+          invoice_number: editFormData.invoice_number.trim() || 'N/A',
+          quantity_kg: Number(parseFloat(editFormData.quantity_kg).toFixed(3)),
+          remarks: editFormData.remarks.trim()
+        },
+        editReason.trim(),
+        currentUserName,
+        'staff'
+      );
+
+      setActionFeedback({ type: 'success', text: `Entry ${editEntry.id} updated successfully.` });
+      setEditEntry(null);
+      await loadEmployeeData();
+      setTimeout(() => setActionFeedback(null), 4000);
+    } catch (err) {
+      setEditError(err.message);
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleOpenDeleteModal = async (entry) => {
+    setDeleteEntry(entry);
+    setDeleteReason('');
+    setDeleteError(null);
+    try {
+      await validateRawMaterialDelete(entry.id);
+    } catch (err) {
+      setDeleteError(err.message);
+    }
+  };
+
+  const handleConfirmDelete = async (e) => {
+    e.preventDefault();
+    if (!deleteEntry) return;
+    if (!deleteReason.trim()) {
+      setDeleteError('A deletion reason is mandatory.');
+      return;
+    }
+    setDeleteLoading(true);
+    try {
+      const currentUserName = activeEmployee?.name || 'Staff';
+      await deleteRawMaterialEntry(
+        deleteEntry.id,
+        deleteReason.trim(),
+        currentUserName,
+        'staff'
+      );
+
+      setActionFeedback({ type: 'success', text: `Entry ${deleteEntry.id} deleted / reversed.` });
+      setDeleteEntry(null);
+      await loadEmployeeData();
+      setTimeout(() => setActionFeedback(null), 4000);
+    } catch (err) {
+      setDeleteError(err.message);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
 
   const handleStartWorkday = () => {
     const session = {
@@ -140,13 +255,20 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
 
       const myRaw = raw.filter(r => matchEmp(r.employee_name, r.employee_id)).map(r => ({
         id: r.entry_id,
+        raw_record: r,
+        moduleStore: 'raw_material',
         module: 'Raw Inward',
         product: r.material_name,
         batch: r.batch_id,
         quantity: `${r.quantity_kg} KG`,
+        quantity_kg: r.quantity_kg,
+        supplier_name: r.supplier_name,
+        invoice_number: r.invoice_number,
+        remarks: r.remarks,
         date: r.date || r.timestamp?.slice(0, 10),
         timestamp: r.timestamp || r.date,
-        synced: Boolean(r.synced)
+        synced: Boolean(r.synced),
+        is_reversed: Boolean(r.is_reversed)
       }));
 
       const myProc = proc.filter(p => matchEmp(p.employee_name, p.employee_id)).map(p => ({
@@ -808,6 +930,43 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                         </div>
                       </div>
                     </div>
+
+                    {/* Entry Action Buttons */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 mt-1">
+                      <span className="text-[10px] text-slate-400 font-medium">
+                        {entry.is_reversed ? <span className="text-red-600 font-bold">Reversed</span> : 'Recorded by you'}
+                      </span>
+                      <div className="flex items-center space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setDetailEntry(entry)}
+                          className="px-2 py-1 bg-white hover:bg-slate-200 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 flex items-center space-x-1"
+                        >
+                          <Eye className="w-3 h-3 text-slate-500" />
+                          <span>Details</span>
+                        </button>
+                        {entry.module === 'Raw Inward' && !entry.is_reversed && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditModal(entry)}
+                              className="px-2 py-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-[10px] font-bold text-blue-800 flex items-center space-x-1"
+                            >
+                              <Edit3 className="w-3 h-3 text-blue-600" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeleteModal(entry)}
+                              className="px-2 py-1 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg text-[10px] font-bold text-red-800 flex items-center space-x-1"
+                            >
+                              <Trash2 className="w-3 h-3 text-red-600" />
+                              <span>Delete</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -817,6 +976,190 @@ export default function EmployeePortal({ activeEmployee, onLogout }) {
                 <p className="text-xs font-semibold">No entries have been recorded under your name yet.</p>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Action Feedback Toast */}
+        {actionFeedback && (
+          <div className="fixed bottom-20 left-4 right-4 sm:left-auto sm:right-6 sm:w-96 z-50 p-3 bg-emerald-900 text-white rounded-2xl shadow-xl text-xs font-bold flex items-center space-x-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+            <span>{actionFeedback.text}</span>
+          </div>
+        )}
+
+        {/* 1. View Details Modal */}
+        {detailEntry && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-scaleUp">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-sm font-black text-slate-900 uppercase">Entry Details</h3>
+                <button onClick={() => setDetailEntry(null)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5 text-xs">
+                <div className="bg-slate-50 p-2 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">ID</span>
+                  <span className="font-mono font-bold text-slate-900">{detailEntry.id}</span>
+                </div>
+                <div className="bg-slate-50 p-2 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Module</span>
+                  <span className="font-bold text-brand-900">{detailEntry.module}</span>
+                </div>
+                <div className="bg-slate-50 p-2 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Product</span>
+                  <span className="font-bold text-slate-900">{detailEntry.product}</span>
+                </div>
+                <div className="bg-slate-50 p-2 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Batch</span>
+                  <span className="font-mono font-bold text-slate-900">{detailEntry.batch}</span>
+                </div>
+                <div className="bg-slate-50 p-2 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Quantity</span>
+                  <span className="font-mono font-black text-slate-900">{detailEntry.quantity}</span>
+                </div>
+                <div className="bg-slate-50 p-2 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Date</span>
+                  <span className="font-medium text-slate-900">{formatDisplayDate(detailEntry.date)}</span>
+                </div>
+                {detailEntry.supplier_name && (
+                  <div className="col-span-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block font-semibold uppercase">Supplier</span>
+                    <span className="font-medium text-slate-900">{detailEntry.supplier_name}</span>
+                  </div>
+                )}
+                {detailEntry.invoice_number && (
+                  <div className="col-span-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block font-semibold uppercase">Invoice No</span>
+                    <span className="font-mono font-medium text-slate-900">{detailEntry.invoice_number}</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end pt-2">
+                <button onClick={() => setDetailEntry(null)} className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 2. Edit Raw Material Modal */}
+        {editEntry && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-scaleUp">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-sm font-black text-slate-900 uppercase">Edit My Raw Material Entry</h3>
+                <button onClick={() => setEditEntry(null)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              {editError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-900 font-semibold">
+                  {editError}
+                </div>
+              )}
+              <form onSubmit={handleSaveEdit} className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Batch Number *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editFormData.batch_id}
+                    onChange={(e) => setEditFormData({ ...editFormData, batch_id: e.target.value.toUpperCase() })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Quantity (KG) *</label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0.001"
+                    required
+                    value={editFormData.quantity_kg}
+                    onChange={(e) => setEditFormData({ ...editFormData, quantity_kg: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Supplier Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editFormData.supplier_name}
+                    onChange={(e) => setEditFormData({ ...editFormData, supplier_name: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Reason for Edit <span className="text-red-500">*</span></label>
+                  <textarea
+                    rows={2}
+                    required
+                    placeholder="e.g. Weighbridge correction..."
+                    value={editReason}
+                    onChange={(e) => setEditReason(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs"
+                  />
+                </div>
+                <div className="flex justify-end space-x-2 pt-2">
+                  <button type="button" onClick={() => setEditEntry(null)} className="px-4 py-2 border rounded-xl font-bold text-slate-600">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={editLoading} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold">
+                    {editLoading ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* 3. Delete Raw Material Modal */}
+        {deleteEntry && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-scaleUp">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 text-red-600">
+                <h3 className="text-sm font-black text-slate-900 uppercase">Delete / Reverse Entry</h3>
+                <button onClick={() => setDeleteEntry(null)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              {deleteError ? (
+                <div className="p-3 bg-red-50 border border-red-300 rounded-xl text-xs text-red-900 space-y-1">
+                  <strong>Unsafe Deletion Blocked:</strong>
+                  <p>{deleteError}</p>
+                </div>
+              ) : (
+                <form onSubmit={handleConfirmDelete} className="space-y-3 text-xs">
+                  <p className="text-slate-600">
+                    Are you sure you want to delete / reverse entry <strong>{deleteEntry.id}</strong> ({deleteEntry.quantity} of {deleteEntry.product})?
+                  </p>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                      Reason for Deletion <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      required
+                      placeholder="e.g. Duplicate entry made by mistake..."
+                      value={deleteReason}
+                      onChange={(e) => setDeleteReason(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs"
+                    />
+                  </div>
+                  <div className="flex justify-end space-x-2 pt-2">
+                    <button type="button" onClick={() => setDeleteEntry(null)} className="px-4 py-2 border rounded-xl font-bold text-slate-600">
+                      Cancel
+                    </button>
+                    <button type="submit" disabled={deleteLoading} className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold">
+                      {deleteLoading ? 'Reversing...' : 'Confirm Deletion'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           </div>
         )}
 

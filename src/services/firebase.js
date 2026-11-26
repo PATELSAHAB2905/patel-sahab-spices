@@ -10,10 +10,43 @@ import {
   serverTimestamp,
   writeBatch
 } from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously 
+} from 'firebase/auth';
 import { getDB } from './db.js';
 
 let firebaseApp = null;
 let firestoreDb = null;
+let firebaseAuth = null;
+let authUser = null;
+
+export const FIRESTORE_RULES = `rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Patel Sahab Spices Production & Inventory
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}`;
+
+/**
+ * Deeply sanitizes data objects for Firestore to prevent undefined values
+ */
+export function sanitizeForFirestore(val) {
+  if (val === undefined || val === null) return null;
+  if (typeof val !== 'object') return val;
+  if (val instanceof Date) return val.toISOString();
+  if (Array.isArray(val)) return val.map(sanitizeForFirestore);
+  const clean = {};
+  for (const [k, v] of Object.entries(val)) {
+    if (v !== undefined) {
+      clean[k] = sanitizeForFirestore(v);
+    }
+  }
+  return clean;
+}
 
 /**
  * Default fallback env configuration
@@ -127,7 +160,22 @@ export async function initFirebase(customConfig = null) {
     }
 
     firestoreDb = getFirestore(firebaseApp);
-    return { initialized: true, app: firebaseApp, db: firestoreDb };
+
+    // Initialize Firebase Auth & Anonymous Session
+    try {
+      firebaseAuth = getAuth(firebaseApp);
+      if (!firebaseAuth.currentUser) {
+        signInAnonymously(firebaseAuth)
+          .then(cred => { authUser = cred.user; })
+          .catch(e => console.warn('Anonymous Firebase auth skipped:', e.message));
+      } else {
+        authUser = firebaseAuth.currentUser;
+      }
+    } catch (authErr) {
+      console.warn('Firebase Auth not available:', authErr.message);
+    }
+
+    return { initialized: true, app: firebaseApp, db: firestoreDb, auth: firebaseAuth, user: authUser };
   } catch (err) {
     console.error('Failed to initialize Firebase:', err);
     return { initialized: false, error: err.message };
@@ -222,8 +270,9 @@ export async function syncRecordToFirestore(tableName, record) {
   const docId = String(record.return_id || record.recovery_id || record.error_id || record.entry_id || record.id || record.order_id || `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
 
   const docRef = doc(db, collectionName, docId);
+  const cleanData = sanitizeForFirestore(record) || {};
   await setDoc(docRef, {
-    ...record,
+    ...cleanData,
     _synced_at: serverTimestamp()
   }, { merge: true });
 
@@ -252,8 +301,9 @@ export async function syncBatchToFirestore(items) {
       const rec = item.data;
       const docId = String(rec.return_id || rec.recovery_id || rec.error_id || rec.entry_id || rec.id || rec.order_id || `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
       const ref = doc(db, colName, docId);
+      const cleanData = sanitizeForFirestore(rec) || {};
       batch.set(ref, {
-        ...rec,
+        ...cleanData,
         _synced_at: serverTimestamp(),
         _cloud_synced_at: new Date().toISOString()
       }, { merge: true });

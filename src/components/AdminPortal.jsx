@@ -65,6 +65,16 @@ import {
   generateExcelWorkbook, 
   triggerExcelDownload 
 } from '../services/reportExportService';
+import { 
+  getFirebaseConfig, 
+  saveFirebaseConfig, 
+  parseFirebaseConfigText, 
+  testFirebaseConnection, 
+  syncAllLocalDataToFirestore, 
+  pullDataFromFirestore,
+  syncRecordToFirestore,
+  FIRESTORE_RULES 
+} from '../services/firebase';
 
 import AdminDashboard from './AdminDashboard';
 import RawMaterialInward from './RawMaterialInward';
@@ -120,6 +130,22 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
   const [maintenancePin, setMaintenancePin] = useState('');
   const [devUnlocked, setDevUnlocked] = useState(false);
 
+  // Firebase Configuration & Operations State
+  const [firebaseConfig, setFirebaseConfig] = useState({
+    apiKey: '',
+    authDomain: '',
+    projectId: '',
+    storageBucket: '',
+    messagingSenderId: '',
+    appId: ''
+  });
+  const [rawConfigInput, setRawConfigInput] = useState('');
+  const [fbTestLoading, setFbTestLoading] = useState(false);
+  const [fbSyncLoading, setFbSyncLoading] = useState(false);
+  const [fbPullLoading, setFbPullLoading] = useState(false);
+  const [copiedRules, setCopiedRules] = useState(false);
+  const [syncQueueItems, setSyncQueueItems] = useState([]);
+
   // Reports & Export State
   const defaultFY = getCurrentFinancialYearRange();
   const [reportFromDate, setReportFromDate] = useState(defaultFY.fromDate);
@@ -161,17 +187,30 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
   const loadAllAdminData = async () => {
     try {
       const db = await getDB();
-      const [emps, prods, limits, sync, nextId] = await Promise.all([
+      const [emps, prods, limits, sync, nextId, fbCfg, queue] = await Promise.all([
         ensureEmployeesMigrated(),
         db.getAll('products'),
         db.get('settings', 'low_stock_limits'),
         getSyncOverview(),
-        getNextEmployeeId()
+        getNextEmployeeId(),
+        getFirebaseConfig(),
+        db.getAll('sync_queue')
       ]);
 
       setEmployees(emps);
       setProducts(prods);
       setSyncState(sync);
+      if (fbCfg) {
+        setFirebaseConfig({
+          apiKey: fbCfg.apiKey || '',
+          authDomain: fbCfg.authDomain || '',
+          projectId: fbCfg.projectId || '',
+          storageBucket: fbCfg.storageBucket || '',
+          messagingSenderId: fbCfg.messagingSenderId || '',
+          appId: fbCfg.appId || ''
+        });
+      }
+      setSyncQueueItems(queue.filter(q => q.status === 'PENDING' || q.status === 'FAILED'));
       if (!newEmployeeId) {
         setNewEmployeeId(nextId);
       }
@@ -277,20 +316,29 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
         // Check if Employee ID changed
         const currentEmpId = (emp.employee_id || emp.id || '').toUpperCase();
         const targetEmpId = (editingEmp.employee_id || '').trim().toUpperCase();
+        let targetEmp = emp;
+
         if (targetEmpId && targetEmpId !== currentEmpId) {
-          await changeEmployeeId(emp.id, targetEmpId, 'Admin');
+          targetEmp = await changeEmployeeId(emp.id, targetEmpId, 'Admin');
         }
 
-        emp.name = editingEmp.name.trim();
-        emp.mobile = (editingEmp.mobile || '').trim();
-        emp.department = (editingEmp.department || 'Production').trim();
-        emp.designation = (editingEmp.designation || editingEmp.role || 'Staff').trim();
-        emp.role = emp.designation;
-        emp.permitted_modules = editingEmp.permitted_modules || [];
-        emp.updatedAt = new Date().toISOString();
-        await db.put('employees', emp);
+        targetEmp.employee_id = targetEmpId || targetEmp.employee_id;
+        targetEmp.name = editingEmp.name.trim();
+        targetEmp.mobile = (editingEmp.mobile || '').trim();
+        targetEmp.department = (editingEmp.department || 'Production').trim();
+        targetEmp.designation = (editingEmp.designation || editingEmp.role || 'Staff').trim();
+        targetEmp.role = targetEmp.designation;
+        targetEmp.permitted_modules = editingEmp.permitted_modules || [];
+        targetEmp.updatedAt = new Date().toISOString();
+
+        await db.put('employees', targetEmp);
+
+        try {
+          await syncRecordToFirestore('employees', targetEmp);
+        } catch {}
+
         setEditingEmp(null);
-        showMsg('success', `Employee details updated successfully.`);
+        showMsg('success', `Employee ${targetEmp.name} (ID: ${targetEmp.employee_id}) profile and mapping updated successfully.`);
         await loadAllAdminData();
       }
     } catch (err) {
@@ -308,6 +356,108 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
       await loadAllAdminData();
     } catch (err) {
       showMsg('error', err.message);
+    }
+  };
+
+  // Firebase Cloud Operations Handlers
+  const handleParseRawFirebase = () => {
+    if (!rawConfigInput.trim()) {
+      showMsg('error', 'Please paste your Firebase configuration snippet first.');
+      return;
+    }
+    const parsed = parseFirebaseConfigText(rawConfigInput);
+    if (parsed && (parsed.apiKey || parsed.projectId)) {
+      setFirebaseConfig(prev => ({ ...prev, ...parsed }));
+      showMsg('success', `Detected Firebase Project: "${parsed.projectId || 'Found'}". Click "Save Configuration" to store.`);
+    } else {
+      showMsg('error', 'Could not detect Firebase configuration keys. Please verify the snippet.');
+    }
+  };
+
+  const handleSaveFirebase = async (e) => {
+    if (e) e.preventDefault();
+    if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+      showMsg('error', 'API Key and Project ID are required to connect Firebase.');
+      return;
+    }
+    try {
+      await saveFirebaseConfig(firebaseConfig);
+      showMsg('success', `Firebase settings saved successfully for project "${firebaseConfig.projectId}"!`);
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', `Failed to save Firebase config: ${err.message}`);
+    }
+  };
+
+  const handleTestFirebase = async () => {
+    if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+      showMsg('error', 'Please enter API Key and Project ID before testing.');
+      return;
+    }
+    setFbTestLoading(true);
+    try {
+      const res = await testFirebaseConnection(firebaseConfig);
+      showMsg('success', res.message || 'Firebase Firestore is connected and writable!');
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', `Firebase Test Failed: ${err.message}`);
+    } finally {
+      setFbTestLoading(false);
+    }
+  };
+
+  const handleManualSyncNow = async () => {
+    try {
+      const res = await triggerSync();
+      if (res.warning) {
+        showMsg('error', res.warning);
+      } else {
+        showMsg('success', res.message || 'Synchronization completed.');
+      }
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', `Sync failed: ${err.message}`);
+      await loadAllAdminData();
+    }
+  };
+
+  const handleSyncAllToFirebase = async () => {
+    setFbSyncLoading(true);
+    try {
+      const res = await syncAllLocalDataToFirestore();
+      showMsg('success', `All factory data uploaded to Cloud Firestore! ${res.totalUploaded} records synced.`);
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', `Firebase Upload Failed: ${err.message}`);
+    } finally {
+      setFbSyncLoading(false);
+    }
+  };
+
+  const handlePullFromFirebase = async () => {
+    if (!window.confirm('Download all inventory records from Firebase Cloud to this device? Local records will be merged.')) {
+      return;
+    }
+    setFbPullLoading(true);
+    try {
+      const res = await pullDataFromFirestore();
+      showMsg('success', `Downloaded ${res.totalDownloaded} records from Firebase Cloud!`);
+      await loadAllAdminData();
+    } catch (err) {
+      showMsg('error', `Firebase Download Failed: ${err.message}`);
+    } finally {
+      setFbPullLoading(false);
+    }
+  };
+
+  const handleCopyRules = async () => {
+    try {
+      await navigator.clipboard.writeText(FIRESTORE_RULES);
+      setCopiedRules(true);
+      showMsg('success', 'Firestore Security Rules copied to clipboard!');
+      setTimeout(() => setCopiedRules(false), 3000);
+    } catch {
+      showMsg('error', 'Failed to copy rules to clipboard.');
     }
   };
 
@@ -1892,16 +2042,214 @@ export default function AdminPortal({ onLogout, activeEmployee }) {
               </form>
             </div>
 
-            {/* Cloud & Background Sync Status */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3 max-w-lg">
-              <div className="flex items-center space-x-2.5 pb-2 border-b border-slate-100">
-                <Flame className="w-5 h-5 text-orange-600" />
-                <h3 className="text-sm font-black text-slate-900 uppercase">Background Cloud Database</h3>
+            {/* Complete Firebase Cloud Firestore Integration Card */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-5 max-w-2xl">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-2">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center">
+                    <Flame className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 uppercase">Firebase Cloud Database Sync</h3>
+                    <p className="text-[11px] text-slate-500">Live multi-device real-time cloud synchronization</p>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
+                    syncState.statusText === 'ALL DATA SYNCED'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : syncState.statusText === 'SYNCING'
+                      ? 'bg-blue-100 text-blue-800 animate-pulse'
+                      : syncState.statusText === 'SYNC FAILED'
+                      ? 'bg-red-100 text-red-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}>
+                    {syncState.statusText}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleManualSyncNow}
+                    disabled={syncState.isSyncing}
+                    className="px-3 py-1.5 bg-brand-900 hover:bg-brand-800 disabled:opacity-50 text-white rounded-xl text-[11px] font-bold flex items-center space-x-1 shadow-xs"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncState.isSyncing ? 'animate-spin' : ''}`} />
+                    <span>Sync Now</span>
+                  </button>
+                </div>
               </div>
-              <div className="text-xs space-y-2 text-slate-600">
-                <p>Status: <strong className="text-emerald-700">{syncState.statusText}</strong></p>
-                <p>Pending Offline Queue: <strong>{syncState.pendingCount} records</strong></p>
-                <p className="text-[11px] text-slate-400">Firebase Firestore is running securely in the background for real-time factory data synchronization.</p>
+
+              {/* Status Details Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Cloud Project</span>
+                  <span className="font-mono font-bold text-slate-900 truncate block">
+                    {syncState.firebaseProjectId || 'Not Configured'}
+                  </span>
+                </div>
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Offline Queue</span>
+                  <span className="font-mono font-bold text-amber-700">
+                    {syncState.pendingCount} records pending
+                  </span>
+                </div>
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 col-span-2 sm:col-span-1">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">Last Cloud Sync</span>
+                  <span className="font-semibold text-slate-700 text-[11px]">
+                    {syncState.lastSyncTime ? new Date(syncState.lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Never'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Pending Queue Items Preview */}
+              {syncQueueItems.length > 0 && (
+                <div className="bg-amber-50/70 p-3 rounded-xl border border-amber-200 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-amber-900 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600" />
+                      <span>{syncQueueItems.length} records in Offline Queue</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleManualSyncNow}
+                      className="text-[10px] font-bold text-amber-800 underline hover:text-amber-900"
+                    >
+                      Retry Upload
+                    </button>
+                  </div>
+                  <div className="max-h-28 overflow-y-auto space-y-1 text-[11px]">
+                    {syncQueueItems.slice(0, 5).map((q, idx) => (
+                      <div key={idx} className="flex justify-between font-mono bg-white/80 p-1.5 rounded border border-amber-200/60">
+                        <span>{q.table} ({q.data?.entry_id || q.data?.return_id || q.data?.id || 'doc'})</span>
+                        <span className="text-amber-800 font-semibold">{q.status} (attempt {q.attempts || 0})</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Setup 1-Click Auto-Fill */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2">
+                <label className="block text-[11px] font-bold text-slate-700 uppercase">
+                  1-Click Quick Setup (Paste from Firebase Console)
+                </label>
+                <p className="text-[10px] text-slate-500">
+                  Firebase Console se <code>const firebaseConfig = &#123; ... &#125;;</code> wala block yahan paste karein aur Auto-Fill click karein:
+                </p>
+                <div className="flex gap-2">
+                  <textarea
+                    rows={2}
+                    value={rawConfigInput}
+                    onChange={(e) => setRawConfigInput(e.target.value)}
+                    placeholder={'const firebaseConfig = {\n  apiKey: "AIzaSy...",\n  projectId: "patel-sahab-spices",\n  ...\n};'}
+                    className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[11px] font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleParseRawFirebase}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold self-end shrink-0"
+                  >
+                    Auto-Fill
+                  </button>
+                </div>
+              </div>
+
+              {/* Firebase Parameters Form */}
+              <form onSubmit={handleSaveFirebase} className="space-y-3 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Project ID *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. patel-sahab-spices"
+                      value={firebaseConfig.projectId}
+                      onChange={(e) => setFirebaseConfig({ ...firebaseConfig, projectId: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono text-xs font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">API Key *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. AIzaSy..."
+                      value={firebaseConfig.apiKey}
+                      onChange={(e) => setFirebaseConfig({ ...firebaseConfig, apiKey: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Auth Domain</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. patel-sahab-spices.firebaseapp.com"
+                      value={firebaseConfig.authDomain}
+                      onChange={(e) => setFirebaseConfig({ ...firebaseConfig, authDomain: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">App ID</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 1:123456:web:abcdef"
+                      value={firebaseConfig.appId}
+                      onChange={(e) => setFirebaseConfig({ ...firebaseConfig, appId: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-brand-900 hover:bg-brand-800 text-white rounded-xl font-bold shadow-xs flex items-center space-x-1.5"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Save Firebase Configuration</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTestFirebase}
+                    disabled={fbTestLoading || !firebaseConfig.projectId}
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 rounded-xl font-bold flex items-center space-x-1.5 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${fbTestLoading ? 'animate-spin' : ''}`} />
+                    <span>{fbTestLoading ? 'Testing...' : 'Test Connection'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCopyRules}
+                    className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-xl font-bold flex items-center space-x-1"
+                  >
+                    <span>{copiedRules ? '✓ Rules Copied' : 'Copy Firestore Rules'}</span>
+                  </button>
+                </div>
+              </form>
+
+              {/* Data Migration Utilities */}
+              <div className="pt-3 border-t border-slate-200 flex flex-wrap gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={handleSyncAllToFirebase}
+                  disabled={fbSyncLoading || !firebaseConfig.projectId}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold flex items-center space-x-1.5 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${fbSyncLoading ? 'animate-spin' : ''}`} />
+                  <span>{fbSyncLoading ? 'Uploading...' : 'Upload All Local Records to Cloud'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePullFromFirebase}
+                  disabled={fbPullLoading || !firebaseConfig.projectId}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 rounded-xl font-bold flex items-center space-x-1.5 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${fbPullLoading ? 'animate-spin' : ''}`} />
+                  <span>{fbPullLoading ? 'Downloading...' : 'Download / Restore from Cloud'}</span>
+                </button>
               </div>
             </div>
 

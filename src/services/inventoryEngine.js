@@ -68,36 +68,162 @@ export function generateRecoveryId() {
   return `REC-${dateStr}-${rand}`;
 }
 
-/**
- * Automatically generate next Batch ID based on Product Prefix
- * Format: {PREFIX}-{001}
- * Never reuses existing batch IDs.
- */
-export async function generateNextBatchId(productPrefix) {
-  if (!productPrefix) {
-    productPrefix = 'BAT';
+// Helper: Convert numeric index (1-based) to alphabetical sequence (A, B, C... Z, AA, AB...)
+export function indexToSequenceLetters(num) {
+  let n = parseInt(num, 10);
+  if (isNaN(n) || n <= 0) return 'A';
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
   }
-  const cleanPrefix = productPrefix.trim().toUpperCase();
+  return s || 'A';
+}
+
+// Helper: Convert alphabetical sequence (A, B, AA...) back to 1-based numeric index
+export function sequenceLettersToIndex(str) {
+  if (!str) return 0;
+  const clean = String(str).trim().toUpperCase();
+  let num = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const code = clean.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      num = num * 26 + (code - 64);
+    }
+  }
+  return num;
+}
+
+// Single-letter product prefix mapping (Haldi = H, Mirchi = M, Dhaniya = D)
+export function getProductSinglePrefix(productNameOrPrefix) {
+  const str = String(productNameOrPrefix || '').trim().toLowerCase();
+  if (str.startsWith('haldi') || str.startsWith('turmeric') || str === 'h' || str === 'hal') return 'H';
+  if (str.startsWith('mirchi') || str.startsWith('chilli') || str.startsWith('chili') || str === 'm' || str === 'mir') return 'M';
+  if (str.startsWith('dhaniya') || str.startsWith('coriander') || str === 'd' || str === 'dha') return 'D';
+  if (str.startsWith('jeera') || str.startsWith('cumin') || str === 'j' || str === 'jee') return 'J';
+  if (str.startsWith('garam') || str === 'g' || str === 'gar') return 'G';
+  if (productNameOrPrefix && String(productNameOrPrefix).trim()) {
+    return String(productNameOrPrefix).trim().slice(0, 1).toUpperCase();
+  }
+  return 'H';
+}
+
+/**
+ * Automatically generate next Batch ID based on Product Prefix + Month + Year + Monthly Purchase Sequence
+ * Examples:
+ * Haldi Nov 2026: H1126A, H1126B, H1126C
+ * Mirchi Nov 2026: M1126A
+ * Dhaniya Nov 2026: D1126A
+ * Haldi Dec 2026: H1226A
+ */
+export async function generateNextBatchId(productNameOrPrefix, purchaseDate = null) {
+  const prefix = getProductSinglePrefix(productNameOrPrefix);
+
+  // Extract Month (MM) and Year (YY) from purchaseDate (defaults to today)
+  let mm = '';
+  let yy = '';
+  if (purchaseDate && typeof purchaseDate === 'string' && purchaseDate.includes('-')) {
+    const parts = purchaseDate.split('-');
+    if (parts.length >= 2) {
+      yy = parts[0].slice(-2);
+      mm = parts[1].padStart(2, '0');
+    }
+  }
+  if (!mm || !yy) {
+    const d = new Date();
+    mm = String(d.getMonth() + 1).padStart(2, '0');
+    yy = String(d.getFullYear()).slice(-2);
+  }
+
   const db = await getDB();
   const rawEntries = await db.getAll('raw_material');
 
-  let maxNum = 0;
-  const regex = new RegExp(`^${cleanPrefix}-(\\d+)$`, 'i');
+  // Match existing batches for this product prefix, month, and year: e.g. ^H1126([A-Z]+)$
+  const regex = new RegExp(`^${prefix}${mm}${yy}([A-Z]+)$`, 'i');
+  let maxSeq = 0;
 
   for (const entry of rawEntries) {
     if (entry.batch_id) {
-      const match = entry.batch_id.match(regex);
+      const match = String(entry.batch_id).trim().match(regex);
       if (match) {
-        const num = parseInt(match[1], 10);
-        if (num > maxNum) {
-          maxNum = num;
+        const seqNum = sequenceLettersToIndex(match[1]);
+        if (seqNum > maxSeq) {
+          maxSeq = seqNum;
         }
       }
     }
   }
 
-  const nextNum = maxNum + 1;
-  return `${cleanPrefix}-${String(nextNum).padStart(3, '0')}`;
+  // Next sequence index (starts at 1 -> A)
+  let nextSeq = maxSeq + 1;
+  let candidateBatch = `${prefix}${mm}${yy}${indexToSequenceLetters(nextSeq)}`;
+
+  // Double check uniqueness across all raw material entries
+  const existingBatchIds = new Set(rawEntries.map(r => (r.batch_id || '').trim().toUpperCase()));
+  while (existingBatchIds.has(candidateBatch.toUpperCase())) {
+    nextSeq += 1;
+    candidateBatch = `${prefix}${mm}${yy}${indexToSequenceLetters(nextSeq)}`;
+  }
+
+  return candidateBatch;
+}
+
+/**
+ * Safely migrate a Batch ID across all inventory and production records.
+ * Updates raw_material, processing, packaging, order_sale, sales_return, and powder_recovery.
+ */
+export async function updateBatchIdAcrossInventory(oldBatchId, newBatchId, modifiedBy = 'Admin', reason = '') {
+  if (!oldBatchId || !newBatchId) throw new Error('Both old and new Batch ID are required.');
+  const cleanOld = oldBatchId.trim().toUpperCase();
+  const cleanNew = newBatchId.trim().toUpperCase();
+  if (cleanOld === cleanNew) return { updatedCount: 0 };
+
+  const db = await getDB();
+  const rawList = await db.getAll('raw_material');
+
+  // Verify newBatchId does not already belong to a different batch
+  const collision = rawList.find(r => (r.batch_id || '').toUpperCase() === cleanNew && (r.batch_id || '').toUpperCase() !== cleanOld);
+  if (collision) {
+    throw new Error(`Batch ID "${cleanNew}" already exists in factory records (Entry ${collision.entry_id}). Batch numbers must remain unique.`);
+  }
+
+  const stores = ['raw_material', 'processing', 'packaging', 'order_sale', 'sales_return', 'powder_recovery'];
+  let updatedCount = 0;
+  const now = new Date().toISOString();
+
+  for (const storeName of stores) {
+    if (!db.objectStoreNames.contains(storeName)) continue;
+    const records = await db.getAll(storeName);
+    for (const rec of records) {
+      if ((rec.batch_id || '').toUpperCase() === cleanOld) {
+        rec.batch_id = cleanNew;
+        rec.previous_batch_id = cleanOld;
+        rec.updated_at = now;
+        rec.updated_by = modifiedBy;
+        rec.synced = false;
+        await db.put(storeName, rec);
+        try {
+          await queueRecordForSync(storeName, rec, 'UPDATE');
+        } catch {}
+        updatedCount++;
+      }
+    }
+  }
+
+  // Audit Log
+  try {
+    await db.add('audit_logs', {
+      timestamp: now,
+      module: 'INVENTORY_ENGINE',
+      action: 'UPDATE_BATCH_ID_CASCADE',
+      performed_by: modifiedBy,
+      target_id: cleanNew,
+      details: `Batch ID migrated from "${cleanOld}" to "${cleanNew}". Total linked records updated: ${updatedCount}. Reason: ${reason || 'Manual Batch ID Update'}`
+    });
+  } catch {}
+
+  return { success: true, oldBatchId: cleanOld, newBatchId: cleanNew, updatedCount };
 }
 
 /**
@@ -1044,26 +1170,42 @@ export async function validateRecordEdit(module, entryId, updatedValues) {
   const db = await getDB();
   const mod = module.toLowerCase();
 
-  if (mod === 'raw_material' && updatedValues.quantity_kg !== undefined) {
+  if (mod === 'raw_material') {
     const rawList = await db.getAll('raw_material');
     const entry = rawList.find(r => r.entry_id === entryId || r.id === entryId);
     if (!entry) throw new Error(`Raw material entry "${entryId}" not found.`);
 
-    const newInward = Number(updatedValues.quantity_kg);
-    if (isNaN(newInward) || newInward <= 0) throw new Error('Quantity must be greater than 0 KG.');
+    // 1. Quantity validation against processed usage
+    if (updatedValues.quantity_kg !== undefined) {
+      const newInward = Number(updatedValues.quantity_kg);
+      if (isNaN(newInward) || newInward <= 0) throw new Error('Quantity must be greater than 0 KG.');
 
-    const batchId = updatedValues.batch_id || entry.batch_id;
-    const activeRaw = rawList.filter(r => isRecordActive(r) && r.batch_id === batchId && r.entry_id !== entry.entry_id);
-    const otherInward = activeRaw.reduce((sum, r) => sum + (Number(r.quantity_kg) || 0), 0);
-    const totalNewInward = otherInward + newInward;
+      const batchId = (updatedValues.batch_id || entry.batch_id).trim().toUpperCase();
+      const activeRaw = rawList.filter(r => isRecordActive(r) && (r.batch_id || '').toUpperCase() === batchId && r.entry_id !== entry.entry_id);
+      const otherInward = activeRaw.reduce((sum, r) => sum + (Number(r.quantity_kg) || 0), 0);
+      const totalNewInward = otherInward + newInward;
 
-    const procList = (await db.getAll('processing')).filter(isRecordActive);
-    const processedKg = procList.filter(p => p.batch_id === batchId).reduce((sum, p) => sum + (Number(p.gross_raw_kg) || 0), 0);
+      const procList = (await db.getAll('processing')).filter(isRecordActive);
+      const processedKg = procList.filter(p => (p.batch_id || '').toUpperCase() === batchId).reduce((sum, p) => sum + (Number(p.gross_raw_kg) || 0), 0);
 
-    if (totalNewInward < processedKg - 0.0001) {
-      throw new Error(
-        `Cannot reduce inward quantity to ${newInward} KG. Batch ${batchId} already has ${processedKg.toFixed(3)} KG processed into powder. Minimum inward required: ${(processedKg - otherInward).toFixed(3)} KG.`
-      );
+      if (totalNewInward < processedKg - 0.0001) {
+        throw new Error(
+          `Cannot reduce inward quantity to ${newInward} KG. Batch ${batchId} already has ${processedKg.toFixed(3)} KG processed into powder. Minimum inward required: ${(processedKg - otherInward).toFixed(3)} KG.`
+        );
+      }
+    }
+
+    // 2. Batch ID change validation
+    if (updatedValues.batch_id !== undefined) {
+      const cleanNewBatch = String(updatedValues.batch_id).trim().toUpperCase();
+      const cleanOldBatch = (entry.batch_id || '').trim().toUpperCase();
+      if (!cleanNewBatch) throw new Error('Batch ID cannot be blank.');
+      if (cleanNewBatch !== cleanOldBatch) {
+        const duplicate = rawList.find(r => r.entry_id !== entry.entry_id && (r.batch_id || '').trim().toUpperCase() === cleanNewBatch);
+        if (duplicate) {
+          throw new Error(`Batch ID "${cleanNewBatch}" already exists in factory records (Entry ${duplicate.entry_id}). Batch numbers must remain unique.`);
+        }
+      }
     }
   }
 
@@ -1144,6 +1286,15 @@ export async function editInventoryRecord(module, entryId, updatedFields, reason
     return { entry, noChange: true };
   }
 
+  // If Batch ID was edited on raw_material, cascade change to all linked modules
+  if (mod === 'raw_material' && diff.batch_id && diff.batch_id.old && diff.batch_id.new) {
+    try {
+      await updateBatchIdAcrossInventory(diff.batch_id.old, diff.batch_id.new, adminName, reason);
+    } catch (cascadeErr) {
+      console.warn('Batch ID cascade warning:', cascadeErr.message);
+    }
+  }
+
   // Apply updates
   Object.assign(entry, updatedFields);
   entry.updated_at = new Date().toISOString();
@@ -1171,4 +1322,87 @@ export async function editInventoryRecord(module, entryId, updatedFields, reason
   } catch {}
 
   return entry;
+}
+
+/**
+ * Validate Raw Material Delete Safety
+ * Checks if the batch's raw material has already been used in Processing.
+ */
+export async function validateRawMaterialDelete(entryId) {
+  const db = await getDB();
+  const rawList = await db.getAll('raw_material');
+  const entry = rawList.find(r => r.entry_id === entryId || r.id === entryId);
+  if (!entry) throw new Error(`Raw Material entry "${entryId}" not found.`);
+  if (entry.is_reversed) throw new Error(`Entry "${entryId}" is already deleted / reversed.`);
+
+  const batchId = (entry.batch_id || '').trim().toUpperCase();
+  const activeRaw = rawList.filter(r => isRecordActive(r) && (r.batch_id || '').toUpperCase() === batchId);
+  const totalInwardKg = activeRaw.reduce((sum, r) => sum + (Number(r.quantity_kg) || 0), 0);
+  const inwardKg = Number(entry.quantity_kg) || 0;
+
+  const procList = (await db.getAll('processing')).filter(isRecordActive);
+  const processedKg = procList
+    .filter(p => (p.batch_id || '').toUpperCase() === batchId)
+    .reduce((sum, p) => sum + (Number(p.gross_raw_kg) || 0), 0);
+
+  const remainingIfDeleted = totalInwardKg - inwardKg;
+  if (remainingIfDeleted < processedKg - 0.0001) {
+    throw new Error(
+      `Cannot delete Raw Material entry ${entryId}. Batch ${batchId} has already had ${processedKg.toFixed(3)} KG processed into powder. Deleting this entry would leave only ${remainingIfDeleted.toFixed(3)} KG inward, causing negative stock. Dependent processing transactions must be reversed first.`
+    );
+  }
+
+  return { valid: true, entry, processedKg, totalInwardKg };
+}
+
+/**
+ * Validate Raw Material Edit Safety
+ */
+export async function validateRawMaterialEdit(entryId, updatedValues) {
+  return validateRecordEdit('raw_material', entryId, updatedValues);
+}
+
+/**
+ * Edit Raw Material Entry (with permission check)
+ */
+export async function editRawMaterialEntry(entryId, updatedFields, reason, userName, userRole = 'staff') {
+  const db = await getDB();
+  const rawList = await db.getAll('raw_material');
+  const entry = rawList.find(r => r.entry_id === entryId || r.id === entryId);
+  if (!entry) throw new Error(`Raw Material entry "${entryId}" not found.`);
+
+  const isAdmin = userRole === 'admin' || userRole === 'Administrator';
+  const isOwner = 
+    (entry.employee_name && entry.employee_name.toLowerCase().trim() === (userName || '').toLowerCase().trim()) ||
+    (entry.employee_id && entry.employee_id.toUpperCase() === (userName || '').toUpperCase()) ||
+    (entry.created_by_id && entry.created_by_id.toUpperCase() === (userName || '').toUpperCase());
+
+  if (!isAdmin && !isOwner) {
+    throw new Error('Permission denied: Employees can only edit their own entries.');
+  }
+
+  return editInventoryRecord('raw_material', entryId, updatedFields, reason, userName);
+}
+
+/**
+ * Delete / Reverse Raw Material Entry (Soft delete with permission check)
+ */
+export async function deleteRawMaterialEntry(entryId, reason, userName, userRole = 'staff') {
+  const db = await getDB();
+  const rawList = await db.getAll('raw_material');
+  const entry = rawList.find(r => r.entry_id === entryId || r.id === entryId);
+  if (!entry) throw new Error(`Raw Material entry "${entryId}" not found.`);
+
+  const isAdmin = userRole === 'admin' || userRole === 'Administrator';
+  const isOwner = 
+    (entry.employee_name && entry.employee_name.toLowerCase().trim() === (userName || '').toLowerCase().trim()) ||
+    (entry.employee_id && entry.employee_id.toUpperCase() === (userName || '').toUpperCase()) ||
+    (entry.created_by_id && entry.created_by_id.toUpperCase() === (userName || '').toUpperCase());
+
+  if (!isAdmin && !isOwner) {
+    throw new Error('Permission denied: Employees can only delete their own entries.');
+  }
+
+  await validateRawMaterialDelete(entryId);
+  return reverseInventoryRecord('raw_material', entryId, reason, userName);
 }

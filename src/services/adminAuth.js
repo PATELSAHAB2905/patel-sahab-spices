@@ -274,10 +274,10 @@ export async function authenticateEmployee(employeeIdInput, passwordInput) {
   const db = await getDB();
   const allEmployees = await db.getAll('employees');
 
-  // Match by employee_id or fallback to id or mobile
+  // Match by employee_id as primary credential, or fallback to mobile / unmigrated id
   const employee = allEmployees.find(e => 
     (e.employee_id && e.employee_id.toUpperCase() === cleanId) ||
-    (e.id && e.id.toUpperCase() === cleanId) ||
+    (!e.employee_id && e.id && e.id.toUpperCase() === cleanId) ||
     (e.mobile && e.mobile.trim() === cleanId)
   );
 
@@ -439,18 +439,62 @@ export async function changeEmployeeId(employeeDbId, newEmpId, adminName = 'Admi
   const allEmployees = await db.getAll('employees');
   const duplicate = allEmployees.find(e => 
     e.id !== employeeDbId && 
-    (e.employee_id || '').toUpperCase() === cleanNewId
+    ((e.employee_id || '').toUpperCase() === cleanNewId || (e.id || '').toUpperCase() === cleanNewId)
   );
 
   if (duplicate) {
     throw new Error(`Employee ID "${cleanNewId}" is already assigned to ${duplicate.name}.`);
   }
 
-  const oldEmpId = emp.employee_id || emp.id;
+  const oldEmpId = (emp.employee_id || emp.id || '').toUpperCase();
+  if (oldEmpId === cleanNewId) {
+    return emp; // No change
+  }
+
+  // Update employee record
   emp.employee_id = cleanNewId;
   emp.updatedAt = new Date().toISOString();
 
+  // If primary key emp.id was the old employee ID, migrate primary key to avoid orphan old ID
+  const oldPrimaryId = emp.id;
+  if (String(oldPrimaryId).toUpperCase() === oldEmpId) {
+    emp.id = cleanNewId;
+    await db.delete('employees', oldPrimaryId);
+  }
+
   await db.put('employees', emp);
+
+  // Update all historical transaction records across all stores to maintain link
+  const stores = ['raw_material', 'processing', 'packaging', 'order_sale', 'sales_return', 'powder_recovery'];
+  let migratedTxCount = 0;
+  for (const s of stores) {
+    if (db.objectStoreNames.contains(s)) {
+      const records = await db.getAll(s);
+      for (const rec of records) {
+        let changed = false;
+        if (rec.employee_id && rec.employee_id.toUpperCase() === oldEmpId) {
+          rec.employee_id = cleanNewId;
+          changed = true;
+        }
+        if (rec.created_by_id && rec.created_by_id.toUpperCase() === oldEmpId) {
+          rec.created_by_id = cleanNewId;
+          changed = true;
+        }
+        if (changed) {
+          await db.put(s, rec);
+          migratedTxCount++;
+        }
+      }
+    }
+  }
+
+  // Update local session if this employee is currently logged in
+  if (typeof localStorage !== 'undefined') {
+    const activeSaved = localStorage.getItem('pss_active_employee_id');
+    if (activeSaved && activeSaved.toUpperCase() === oldEmpId) {
+      localStorage.setItem('pss_active_employee_id', cleanNewId);
+    }
+  }
 
   // Audit log
   try {
@@ -459,8 +503,8 @@ export async function changeEmployeeId(employeeDbId, newEmpId, adminName = 'Admi
       module: 'EMPLOYEE_MANAGEMENT',
       action: 'CHANGE_EMPLOYEE_ID',
       performed_by: adminName,
-      target_id: employeeDbId,
-      details: `Employee ID changed from ${oldEmpId} to ${cleanNewId} for employee ${emp.name}`,
+      target_id: cleanNewId,
+      details: `Employee ID changed from ${oldEmpId} to ${cleanNewId} for employee ${emp.name}. Migrated ${migratedTxCount} historical transactions.`,
       old_value: oldEmpId,
       new_value: cleanNewId
     });

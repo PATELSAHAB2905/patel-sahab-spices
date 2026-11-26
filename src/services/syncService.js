@@ -5,6 +5,7 @@ import {
   isFirebaseConfigured, 
   getFirebaseConfig 
 } from './firebase';
+import { logSystemError } from './errorLogger';
 
 // Listeners for sync state updates
 const listeners = new Set();
@@ -80,10 +81,14 @@ export async function getSyncOverview() {
   let statusText = 'ONLINE';
   if (!isOnline) {
     statusText = 'OFFLINE';
+  } else if (!hasFirebase) {
+    statusText = 'LOCAL STORAGE (FIREBASE NOT CONFIGURED)';
   } else if (failed > 0) {
     statusText = 'SYNC FAILED';
   } else if (pending > 0) {
     statusText = 'PENDING SYNC';
+  } else {
+    statusText = 'ALL DATA SYNCED';
   }
 
   return {
@@ -110,13 +115,18 @@ export async function triggerSync() {
 
   const fbConfigured = await isFirebaseConfigured();
   if (!fbConfigured) {
+    isSyncing = false;
+    notifySyncStatus({ 
+      isSyncing: false, 
+      warning: 'Firebase Firestore is running in local offline mode.' 
+    });
     return {
-      warning: 'Firebase Firestore is running in local offline-first mode.'
+      warning: 'Firebase Firestore is running in local offline-first mode. Configure Firebase in Admin Settings to enable Cloud sync.'
     };
   }
 
   isSyncing = true;
-  notifySyncStatus({ isSyncing: true });
+  notifySyncStatus({ isSyncing: true, statusText: 'SYNCING' });
 
   try {
     const db = await getDB();
@@ -125,7 +135,7 @@ export async function triggerSync() {
 
     if (pendingItems.length === 0) {
       isSyncing = false;
-      notifySyncStatus({ isSyncing: false });
+      notifySyncStatus({ isSyncing: false, statusText: 'ALL DATA SYNCED' });
       return { success: true, count: 0, message: 'All records are already synced.' };
     }
 
@@ -176,7 +186,7 @@ export async function triggerSync() {
     await tx.done;
 
     isSyncing = false;
-    notifySyncStatus({ isSyncing: false, lastSyncTime: now });
+    notifySyncStatus({ isSyncing: false, statusText: 'ALL DATA SYNCED', lastSyncTime: now });
     return {
       success: true,
       count: pendingItems.length,
@@ -188,7 +198,7 @@ export async function triggerSync() {
     try {
       const db = await getDB();
       const allQueue = await db.getAll('sync_queue');
-      const pendingItems = allQueue.filter(q => q.status === 'PENDING');
+      const pendingItems = allQueue.filter(q => q.status === 'PENDING' || q.status === 'FAILED');
       for (const item of pendingItems) {
         item.attempts = (item.attempts || 0) + 1;
         item.last_attempt = new Date().toISOString();
@@ -198,10 +208,18 @@ export async function triggerSync() {
         }
         await db.put('sync_queue', item);
       }
+
+      await logSystemError({
+        module: 'SYNC',
+        description: `Firebase Cloud Sync Error: ${err.message}`,
+        severity: 'HIGH',
+        errorObj: err,
+        metadata: { pendingCount: pendingItems.length }
+      });
     } catch (_) {}
 
     isSyncing = false;
-    notifySyncStatus({ isSyncing: false, lastError: err.message });
+    notifySyncStatus({ isSyncing: false, statusText: 'SYNC FAILED', lastError: err.message });
     throw err;
   }
 }
